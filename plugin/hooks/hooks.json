@@ -1,0 +1,52 @@
+{
+  "description": "touryou のフック（PreToolUse・PostToolUse・Notification〔入力待ちの報告〕・Stop〔未読の確かめ〕）。touryou（$HOME 基準の固定の場所）の hook サブコマンドを呼ぶ。touryou が未配置のときは、素通し（子の環境変数 TOURYOU_NODE_TOKEN と TOURYOU_DAEMON_URL の両方があるときだけ、PreToolUse は拒否）。command の正本は scripts/hook-commands.mjs",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=\"${HOME:-}/.touryou/current/bin/touryou\"; if [ -n \"${HOME:-}\" ] && [ -x \"$c\" ]; then \"$c\" hook; r=$?; case \"$r\" in 0|2) exit \"$r\";; esac; fi; if [ -n \"${TOURYOU_NODE_TOKEN:-}\" ] && [ -n \"${TOURYOU_DAEMON_URL:-}\" ]; then echo \"[touryou hook] 拒否: touryou が見つからない、または動かない（/touryou:setup を実行する）\" >&2; exit 2; fi; echo \"[touryou hook] touryou が未配置、または動かないため、フックは働いていない（touryou の子でなければ、問題ない）\" >&2; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=\"${HOME:-}/.touryou/current/bin/touryou\"; if [ -n \"${HOME:-}\" ] && [ -x \"$c\" ]; then \"$c\" hook; exit 0; fi; echo \"[touryou hook] touryou が未配置のため、フックは働いていない（touryou の子でなければ、問題ない）\" >&2; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=\"${HOME:-}/.touryou/current/bin/touryou\"; if [ -n \"${HOME:-}\" ] && [ -x \"$c\" ]; then \"$c\" hook; exit 0; fi; echo \"[touryou hook] touryou が未配置のため、フックは働いていない（touryou の子でなければ、問題ない）\" >&2; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=\"${HOME:-}/.touryou/current/bin/touryou\"; if [ -n \"${HOME:-}\" ] && [ -x \"$c\" ]; then \"$c\" hook; exit 0; fi; echo \"[touryou hook] touryou が未配置のため、フックは働いていない（touryou の子でなければ、問題ない）\" >&2; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

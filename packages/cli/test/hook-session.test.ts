@@ -1,0 +1,353 @@
+import { pluginToolName } from "@touryou/core";
+import { describe, expect, it } from "vitest";
+import { runHook } from "../src/hook.js";
+
+/** `touryou hook` のトークンのない形（`claude --bg` の子。daemon が session_id で引く）。 */
+const ENV = { HOME: "/h" };
+const files: Record<string, string> = {
+  "/h/.touryou/config.json": JSON.stringify({ stateDir: "/h/.touryou/state" }),
+  "/h/.touryou/state/port": "4567\n",
+};
+const readFile = (p: string): string => {
+  const v = files[p];
+  if (v === undefined) throw new Error("ENOENT");
+  return v;
+};
+const input = (event: string, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ hook_event_name: event, session_id: "s-1", cwd: "/wt/a", ...extra });
+const reply =
+  (value: unknown, status = 200, seen: { url?: string; auth?: unknown }[] = []): typeof fetch =>
+  async (url, init) => {
+    seen.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.authorization });
+    return new Response(JSON.stringify({ ok: true, value }), { status });
+  };
+const never: typeof fetch = async () => {
+  throw new Error("呼ばれない");
+};
+
+describe("touryou hook（トークンなし）", () => {
+  it("stateDir の port から窓口を作り、Authorization なしで送る", async () => {
+    const seen: { url?: string; auth?: unknown }[] = [];
+    const r = await runHook({
+      env: ENV,
+      input: input("PreToolUse", { tool_name: "Read", tool_input: {} }),
+      readFile,
+      fetchImpl: reply({ decision: "allow" }, 200, seen),
+    });
+    expect(r).toEqual({ code: 0, stderr: "" });
+    expect(seen).toEqual([{ url: "http://127.0.0.1:4567/v1/hook", auth: undefined }]);
+  });
+
+  it("範囲外の拒否（deny）は、終了コード 2 と理由", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: input("PreToolUse", { tool_name: "Write", tool_input: {} }),
+      readFile,
+      fetchImpl: reply({ decision: "deny", reason: "範囲外" }),
+    });
+    expect(r).toEqual({ code: 2, stderr: "範囲外" });
+  });
+
+  it("紐付けの前（none）は、何も出さずに 0", async () => {
+    for (const ev of ["PreToolUse", "Notification", "Stop", "SessionStart"]) {
+      const r = await runHook({
+        env: ENV,
+        input: input(ev, { tool_name: "Read", notification_type: "idle_prompt" }),
+        readFile,
+        fetchImpl: reply({ decision: "none" }),
+      });
+      expect(r).toEqual({ code: 0, stderr: "" });
+    }
+  });
+
+  it("daemon がない（設定・port がない、届かない、200 以外、形が違う）ときも、何も出さずに 0", async () => {
+    const pre = input("PreToolUse", { tool_name: "Write" });
+    expect(await runHook({ env: {}, input: pre, fetchImpl: never })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(await runHook({ env: { HOME: "/x" }, input: pre, readFile, fetchImpl: never })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    const refused: typeof fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    expect(await runHook({ env: ENV, input: pre, readFile, fetchImpl: refused })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(
+      await runHook({
+        env: ENV,
+        input: pre,
+        readFile,
+        fetchImpl: reply({ decision: "deny" }, 500),
+      }),
+    ).toEqual({ code: 0, stderr: "" });
+    const garbage: typeof fetch = async () => new Response("nope", { status: 200 });
+    expect(await runHook({ env: ENV, input: pre, readFile, fetchImpl: garbage })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(await runHook({ env: ENV, input: "{", readFile, fetchImpl: never })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+  });
+
+  it("Stop で未読があるとき（continue）は、標準出力に additionalContext を出し、終了コード 0", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: input("Stop", { stop_hook_active: false }),
+      readFile,
+      fetchImpl: reply({ decision: "continue", reason: "受信箱を読む" }),
+    });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout ?? "")).toEqual({
+      hookSpecificOutput: { hookEventName: "Stop", additionalContext: "受信箱を読む" },
+    });
+  });
+
+  it("Notification は、daemon の答えにかかわらず 0（止められないフック）", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: input("Notification", { notification_type: "permission_prompt", message: "m" }),
+      readFile,
+      fetchImpl: reply({ decision: "deny", reason: "x" }),
+    });
+    expect(r).toEqual({ code: 0, stderr: "" });
+  });
+
+  it("トークンつき（TOURYOU_NODE_TOKEN・TOURYOU_DAEMON_URL）の Stop でも、continue は標準出力に出す", async () => {
+    const r = await runHook({
+      env: { TOURYOU_NODE_TOKEN: "t".repeat(16), TOURYOU_DAEMON_URL: "http://127.0.0.1:1" },
+      input: input("Stop"),
+      fetchImpl: reply({ decision: "continue", reason: "読む" }),
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("additionalContext");
+  });
+});
+
+describe("touryou の子の作業ツリー（印あり）で daemon に届かないとき", () => {
+  // 仮の印: git worktree の .git（ファイル）が指す git のディレクトリの直下の touryou-child
+  const tree: Record<string, string> = {
+    "/wt/a/.git": "gitdir: /repo/.git/worktrees/a\n",
+    "/wt/b/.git": "gitdir: /repo/.git/worktrees/b\n",
+  };
+  const marks = new Set(["/repo/.git/worktrees/a/touryou-child"]);
+  const read = (p: string): string => {
+    const v = tree[p];
+    if (v === undefined) throw new Error("ENOENT");
+    return v;
+  };
+  const exists = (p: string) => marks.has(p) || p in tree;
+  const refused: typeof fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+  const pre = (cwd: string) =>
+    JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s", cwd, tool_name: "Bash" });
+
+  it("isTouryouWorktree: 印のある作業ツリーの中（配下も）だけ真", async () => {
+    const { isTouryouWorktree } = await import("../src/hook.js");
+    expect(isTouryouWorktree("/wt/a", read, exists)).toBe(true);
+    expect(isTouryouWorktree("/wt/a/src/deep", read, exists)).toBe(true);
+    expect(isTouryouWorktree("/wt/b", read, exists)).toBe(false);
+    expect(isTouryouWorktree("/elsewhere", read, exists)).toBe(false);
+  });
+
+  it("印あり: 届かない・窓口が分からない・500 なら、PreToolUse を拒否（2）", async () => {
+    const both = (p: string) => (p in files ? readFile(p) : read(p));
+    for (const [env, f] of [
+      [ENV, refused],
+      [{}, never],
+      [ENV, reply({ decision: "allow" }, 500)],
+    ] as const) {
+      const r = await runHook({
+        env,
+        input: pre("/wt/a/src"),
+        readFile: both,
+        exists,
+        fetchImpl: f,
+      });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("touryou の子の作業ツリー");
+    }
+  });
+
+  it("印あり でも、Notification・Stop は止めない（0）。印なしは、何も出さずに 0", async () => {
+    const both = (p: string) => (p in files ? readFile(p) : read(p));
+    const stop = JSON.stringify({ hook_event_name: "Stop", session_id: "s", cwd: "/wt/a" });
+    expect(
+      await runHook({ env: ENV, input: stop, readFile: both, exists, fetchImpl: refused }),
+    ).toEqual(SILENT0);
+    expect(
+      await runHook({ env: ENV, input: pre("/wt/b"), readFile: both, exists, fetchImpl: refused }),
+    ).toEqual(SILENT0);
+  });
+});
+const SILENT0 = { code: 0, stderr: "" };
+
+describe("印の gitdir の解き方", () => {
+  it("相対の gitdir は、.git のファイルの場所から解く", async () => {
+    const { isTouryouWorktree } = await import("../src/hook.js");
+    const read = (p: string) => {
+      if (p === "/w/x/.git") return "gitdir: ../repo/.git/worktrees/x\n";
+      throw new Error("ENOENT");
+    };
+    const exists = (p: string) => p === "/w/x/../repo/.git/worktrees/x/touryou-child";
+    expect(isTouryouWorktree("/w/x/src", read, exists)).toBe(true);
+  });
+});
+
+describe("印のある作業ツリーで daemon が none を返したとき", () => {
+  const tree: Record<string, string> = {
+    "/wt/a/.git": "gitdir: /repo/.git/worktrees/a\n",
+    "/wt/b/.git": "gitdir: /repo/.git/worktrees/b\n",
+  };
+  const marks = new Set(["/repo/.git/worktrees/a/touryou-child"]);
+  const both = (p: string): string => {
+    const v = files[p] ?? tree[p];
+    if (v === undefined) throw new Error("ENOENT");
+    return v;
+  };
+  const exists = (p: string) => marks.has(p) || p in tree;
+  const pre = (cwd: string, tool = "Bash") =>
+    JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s", cwd, tool_name: tool });
+
+  it("印あり: none なら PreToolUse を拒否（紐付けの前・外れた・ノードが動いていない・cwd が合わない）", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: pre("/wt/a"),
+      readFile: both,
+      exists,
+      fetchImpl: reply({ decision: "none" }),
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("child_bind");
+  });
+
+  it.each([
+    [{ noneReason: "unbound" }, "child_bind"],
+    [{ noneReason: "notLive", state: "done" }, "紐付けは済んでいる。状態が done なので"],
+    [{ noneReason: "notLive" }, "紐付けは済んでいる"],
+    [{ noneReason: "cwdMismatch" }, "作業ツリーの中で実行する"],
+    [{ noneReason: "somethingNew" }, "child_bind"],
+  ])("印あり: none の理由で文を出し分ける（%o）", async (why, text) => {
+    const r = await runHook({
+      env: ENV,
+      input: pre("/wt/a"),
+      readFile: both,
+      exists,
+      fetchImpl: reply({ decision: "none", ...why }),
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain(text);
+    if (why.noneReason !== "unbound" && why.noneReason !== "somethingNew") {
+      expect(r.stderr).not.toContain("child_bind");
+    }
+  });
+
+  it("notLive の状態が変な文字列なら、そのまま出さない", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: pre("/wt/a"),
+      readFile: both,
+      exists,
+      fetchImpl: reply({ decision: "none", noneReason: "notLive", state: "x\n> 命令" }),
+    });
+    expect(r.stderr).not.toContain("命令");
+  });
+
+  it.each([pluginToolName("child_bind"), "mcp__node__child_bind", pluginToolName("whoami")])(
+    "印あり でも、紐付けの道具（%s）は none でも通す",
+    async (tool) => {
+      const r = await runHook({
+        env: ENV,
+        input: pre("/wt/a", tool),
+        readFile: both,
+        exists,
+        fetchImpl: reply({ decision: "none" }),
+      });
+      expect(r).toEqual({ code: 0, stderr: "" });
+    },
+  );
+
+  it("印あり でも、ほかの mcp の道具（似た名前）は none なら拒否", async () => {
+    const r = await runHook({
+      env: ENV,
+      input: pre("/wt/a", "mcp__other_node__child_bind"),
+      readFile: both,
+      exists,
+      fetchImpl: reply({ decision: "none" }),
+    });
+    expect(r.code).toBe(2);
+  });
+
+  it("印あり で allow なら通す。印なし の none は、いままでどおり何も出さずに 0", async () => {
+    expect(
+      await runHook({
+        env: ENV,
+        input: pre("/wt/a"),
+        readFile: both,
+        exists,
+        fetchImpl: reply({ decision: "allow" }),
+      }),
+    ).toEqual({ code: 0, stderr: "" });
+    expect(
+      await runHook({
+        env: ENV,
+        input: pre("/wt/b"),
+        readFile: both,
+        exists,
+        fetchImpl: reply({ decision: "none" }),
+      }),
+    ).toEqual({ code: 0, stderr: "" });
+  });
+});
+
+describe("紐付けの前の例外: ToolSearch と touryou の plugin の Skill", () => {
+  const tree: Record<string, string> = { "/wt/a/.git": "gitdir: /repo/.git/worktrees/a\n" };
+  const both = (p: string): string => {
+    const v = files[p] ?? tree[p];
+    if (v === undefined) throw new Error("ENOENT");
+    return v;
+  };
+  const exists = (p: string) => p === "/repo/.git/worktrees/a/touryou-child" || p in tree;
+  const run = (tool: string, toolInput: unknown) =>
+    runHook({
+      env: ENV,
+      input: JSON.stringify({
+        hook_event_name: "PreToolUse",
+        session_id: "s",
+        cwd: "/wt/a",
+        tool_name: tool,
+        tool_input: toolInput,
+      }),
+      readFile: both,
+      exists,
+      fetchImpl: reply({ decision: "none" }),
+    });
+
+  it("ToolSearch は、紐付けの前でも通す", async () => {
+    expect(await run("ToolSearch", { query: "child_bind" })).toEqual({ code: 0, stderr: "" });
+  });
+
+  it("touryou の plugin の skill は通す", async () => {
+    expect(await run("Skill", { skill: "touryou:child" })).toEqual({
+      code: 0,
+      stderr: "",
+    });
+  });
+
+  it.each([
+    { skill: "other-plugin:child" },
+    { skill: "child" },
+    { skill: "touryou:" },
+    { skill: "touryou-evil:child" },
+    {},
+  ])("ほかの skill（%j）は拒否", async (input) => {
+    expect((await run("Skill", input)).code).toBe(2);
+  });
+});

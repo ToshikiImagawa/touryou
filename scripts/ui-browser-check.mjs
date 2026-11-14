@@ -1,0 +1,1344 @@
+/**
+ * HTML 画面を、実際のブラウザで確かめる（手動の確認用。CI には入れない。手順は docs/manual-verification-ui.md）。
+ * 前提: `pnpm build` 済み。Playwright は依存に加えない（環境にあるものを、`TOURYOU_PLAYWRIGHT` のパスで読む）。
+ * 使い方: TOURYOU_PLAYWRIGHT=$(npm root -g)/playwright node scripts/ui-browser-check.mjs
+ * Chromium は Playwright の既定のものを使う。別のものを使うときは TOURYOU_CHROMIUM にそのパスを指定する。
+ */
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const R = join(dirname(fileURLToPath(import.meta.url)), "..", "packages");
+const require = createRequire(import.meta.url);
+const playwrightPath = process.env.TOURYOU_PLAYWRIGHT;
+if (playwrightPath === undefined)
+  throw new Error("TOURYOU_PLAYWRIGHT（playwright のパス）を指定する");
+const { chromium } = require(playwrightPath);
+const { foldEvents } = await import(`${R}/core/dist/index.js`);
+const { createCredentialStore } = await import(`${R}/daemon/dist/api/credentials.js`);
+const { createApiServer } = await import(`${R}/daemon/dist/api/server.js`);
+const { stopDelegatedOf } = await import(`${R}/daemon/dist/compose.js`);
+const { DesktopRuntimeAdapter } = await import(`${R}/daemon/dist/sdk/desktop-adapter.js`);
+const { createConfirmationGate } = await import(`${R}/daemon/dist/api/confirmation-gate.js`);
+const HUMAN = "human-token-human-token-human-token-1234";
+let n = 0;
+const ev = (b) => ({
+  seq: ++n,
+  at: "2026-10-20T00:00:00Z",
+  requestId: `r${n}`,
+  actor: { system: true },
+  ...b,
+});
+const XSS = '<img src=x onerror="window.__xss=1"><script>window.__xss=1</script>';
+const r = foldEvents([
+  ev({
+    type: "node.created",
+    payload: { nodeId: "root", role: "integrator", parentId: null, dependsOn: [] },
+  }),
+  ev({ type: "node.stateChanged", payload: { nodeId: "root", event: { type: "start" } } }),
+  ev({
+    type: "node.created",
+    payload: { nodeId: "m1", role: "integrator", parentId: "root", dependsOn: [] },
+  }),
+  ev({ type: "node.stateChanged", payload: { nodeId: "m1", event: { type: "start" } } }),
+  ev({
+    type: "node.created",
+    payload: { nodeId: "a", role: "implement", parentId: "m1", dependsOn: [] },
+  }),
+  ev({ type: "node.stateChanged", payload: { nodeId: "a", event: { type: "start" } } }),
+  ev({ type: "inbox.added", payload: { id: "p1", kind: "progress", nodeId: "a", summary: XSS } }),
+  ev({
+    type: "inbox.added",
+    payload: { id: "i1", kind: "info", nodeId: "a", summary: "情報です" },
+  }),
+]);
+if (!r.ok) throw new Error(r.error.code + r.error.cause);
+let state = r.value;
+// Object.prototype のキーと同じ名前のノード（描画で、表の引き当てを間違えないこと）
+state = {
+  ...state,
+  nodes: [
+    ...state.nodes,
+    { id: "constructor", role: "implement", parentId: "m1", state: "running", dependsOn: [] },
+    // アーカイブ済みの木（最終削除の対象）: arch1（削除できる）と arch2（できない）
+    { id: "arch1", role: "integrator", parentId: null, state: "archived", dependsOn: [] },
+    { id: "arch1c", role: "implement", parentId: "arch1", state: "archived", dependsOn: [] },
+    { id: "arch2", role: "integrator", parentId: null, state: "archived", dependsOn: [] },
+  ],
+};
+let kept = [
+  {
+    key: "k1-aaaaaaaaaaaa",
+    tip: "a".repeat(40),
+    nodeId: "arch1c",
+    orphan: false,
+    committedAt: "2026-10-01T00:00:00Z",
+    untrustedSubject: `件名 \u001b[31m${XSS}`,
+  },
+  { key: "bad key!", tip: "b".repeat(40), orphan: true },
+];
+state = {
+  ...state,
+  decisions: [
+    {
+      decisionId: "d1",
+      nodeId: "a",
+      status: "open",
+      question: XSS,
+      options: ["A案", XSS],
+      rejected: [],
+    },
+    {
+      decisionId: "d2",
+      nodeId: "a",
+      status: "open",
+      question: "自由入力の判断",
+      options: [],
+      rejected: [],
+    },
+    {
+      decisionId: "d3",
+      nodeId: "a",
+      status: "open",
+      question: `長い質問。${"問".repeat(2500)}`,
+      options: ["短い選択肢", "長".repeat(600)],
+      rejected: [],
+    },
+  ],
+};
+// 拡張要求: x1 は表示してよい対象、x2 は絶対パスにあたる対象（隠れる）、x3 は XSS 文字列の理由
+state = {
+  ...state,
+  extensions: [
+    {
+      extensionId: "x1",
+      nodeId: "a",
+      status: "open",
+      reason: "テストを足したい",
+      target: { kind: "write", value: "src/ok.ts" },
+    },
+    {
+      extensionId: "x2",
+      nodeId: "a",
+      status: "open",
+      reason: "外へ書きたい",
+      target: { kind: "write", value: "../outside/secret" },
+    },
+    {
+      extensionId: "x3",
+      nodeId: "a",
+      status: "open",
+      reason: XSS,
+      target: { kind: "command", value: "pnpm test" },
+    },
+  ],
+};
+// 停止したノード: s1 は破棄を指示できる、s2 は失われるものを調べられない、s3 は破棄を指示済み
+state = {
+  ...state,
+  nodes: [
+    ...state.nodes,
+    { id: "s1", role: "implement", parentId: "m1", state: "stopped", dependsOn: [] },
+    { id: "s2", role: "implement", parentId: "m1", state: "stopped", dependsOn: [] },
+    {
+      id: "s3",
+      role: "implement",
+      parentId: "m1",
+      state: "stopped",
+      dependsOn: [],
+      discarded: { seq: 1, at: "2026-10-20T00:00:00Z", by: { human: true } },
+    },
+  ],
+};
+// 停止の宣言: c1 は停止未完了で、親に代行してもらうノード（stopDelegated）。c2 は停止未完了だが、daemon が直接止める
+state = {
+  ...state,
+  nodes: [
+    ...state.nodes,
+    { id: "c1", role: "implement", parentId: "m1", state: "stopIncomplete", dependsOn: [] },
+    { id: "c2", role: "implement", parentId: "m1", state: "stopIncomplete", dependsOn: [] },
+  ],
+};
+// s1 の今のブランチの先端（見せたあとで、変える）
+const currentTips = { s1: "a".repeat(40) };
+// 操作の呼び出しの記録（画面の操作の確認用）。d2 の最初の回答は、失敗させる（失敗の表示と、同じ要求 ID での再送の確認）
+const calls = [];
+let failD2Once = true;
+const bump = (patch) => {
+  state = { ...state, ...patch, lastSeq: state.lastSeq + 1 };
+};
+const handlers = {
+  "decision.answer": async (req) => {
+    calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+    await new Promise((r) => setTimeout(r, 150));
+    if (req.params.decisionId === "d2" && failD2Once) {
+      failD2Once = false;
+      return {
+        ok: false,
+        error: {
+          code: "conflict",
+          cause: "別の回答が先に確定している",
+          nextActions: ["状態を取り直す"],
+        },
+      };
+    }
+    bump({ decisions: state.decisions.filter((d) => d.decisionId !== req.params.decisionId) });
+    // d1 の回答では、再開しなかった子を返す。形の違う ID（XSS）は、画面に出ないこと
+    if (req.params.decisionId === "d1") {
+      return {
+        ok: true,
+        value: {
+          accepted: true,
+          notResumed: [
+            { nodeId: "a", reason: "stoppedAfterStopIncomplete" },
+            { nodeId: XSS, reason: "discarded" },
+          ],
+        },
+      };
+    }
+    return { ok: true, value: { accepted: true } };
+  },
+};
+handlers["node.purgePreview"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  const blocked = req.params.nodeId === "arch2";
+  return {
+    ok: true,
+    value: {
+      nodeIds: blocked ? ["arch2"] : ["arch1", "arch1c"],
+      archivedAt: "2026-10-01T00:00:00Z",
+      elapsedDays: 22,
+      retentionDays: 14,
+      tombstoneTitle: "削除する木",
+      purgeable: !blocked,
+      blockers: blocked ? [{ code: "dependedOn", cause: "木の外のノードが依存している" }] : [],
+      discardedRefs: blocked ? 0 : 1,
+      ...(blocked
+        ? { hold: { nodeId: "arch2", until: "2027-01-01T00:00:00Z", reason: "調査中の保留" } }
+        : {}),
+    },
+  };
+};
+handlers["node.purge"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  await new Promise((r) => setTimeout(r, 100));
+  bump({ nodes: state.nodes.filter((n) => !["arch1", "arch1c"].includes(n.id)) });
+  return { ok: true, value: { purged: ["arch1", "arch1c"] } };
+};
+handlers["node.purgeHold"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  // days は、daemon の時計で決める。daemon が決めた期限を返す
+  const until =
+    req.params.days === undefined
+      ? req.params.until
+      : new Date(Math.floor((Date.now() + req.params.days * 86400000) / 1000) * 1000)
+          .toISOString()
+          .replace(/\.\d{3}Z$/, "Z");
+  return { ok: true, value: { held: true, ...(until === undefined ? {} : { until }) } };
+};
+handlers["node.discardedList"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  return { ok: true, value: { items: kept, max: 200 } };
+};
+handlers["node.discardedDrop"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  kept = kept.filter((k) => k.key !== req.params.target);
+  return { ok: true, value: { dropped: true, key: req.params.target, tip: req.params.expectTip } };
+};
+handlers["scope.decide"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  await new Promise((r) => setTimeout(r, 100));
+  bump({ extensions: state.extensions.filter((x) => x.extensionId !== req.params.extensionId) });
+  return { ok: true, value: { state: "running" } };
+};
+const credentials = createCredentialStore({ humanToken: HUMAN });
+const server = createApiServer({
+  credentials,
+  getState: () => state,
+  handlers,
+  stopDelegated: (id) => id === "c1",
+});
+handlers["node.confirmStopped"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  await new Promise((r) => setTimeout(r, 150));
+  bump({
+    nodes: state.nodes.map((x) => (x.id === req.params.nodeId ? { ...x, state: "stopped" } : x)),
+  });
+  return { ok: true, value: { state: "stopped" } };
+};
+// フックの結び付けを外す: a は 1 回目は外し、2 回目は再送として返す。constructor は結び付けがない
+const hookUnbindCount = new Map();
+handlers["node.hookUnbind"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  await new Promise((r) => setTimeout(r, 100));
+  const n = (hookUnbindCount.get(req.params.nodeId) ?? 0) + 1;
+  hookUnbindCount.set(req.params.nodeId, n);
+  if (req.params.nodeId !== "a") return { ok: true, value: { unbound: false, duplicate: false } };
+  return {
+    ok: true,
+    value: n === 1 ? { unbound: true, duplicate: false } : { unbound: false, duplicate: true },
+  };
+};
+const { url } = await server.listen(0);
+handlers["node.reclaimPreview"] = async (req) => {
+  if (req.params.nodeId === "s2") {
+    return {
+      ok: true,
+      value: {
+        reclaimable: false,
+        unmet: ["discardRequired"],
+        blockers: [],
+        loss: [
+          { nodeId: "s2", unknown: true, untrustedSubjects: [], uncommitted: false, untracked: 0 },
+        ],
+        tips: {},
+      },
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      reclaimable: false,
+      unmet: ["discardRequired", "processesRunning"],
+      blockers: [{ kind: "process", reason: "processesRunning", pid: 4242 }],
+      loss: [
+        {
+          nodeId: "s1",
+          aheadCommits: 2,
+          untrustedSubjects: [XSS, "二つ目のコミット"],
+          uncommitted: true,
+          untracked: 3,
+        },
+      ],
+      tips: { ...currentTips },
+    },
+  };
+};
+handlers["node.reclaimInstruct"] = async (req) => {
+  calls.push({ operation: req.operation, requestId: req.requestId, params: req.params });
+  await new Promise((r) => setTimeout(r, 150));
+  // 見せた先端と、今の先端を照合する（daemon と同じ。違えば、何も記録しない）
+  if (JSON.stringify(req.params.expectTips) !== JSON.stringify(currentTips)) {
+    return {
+      ok: false,
+      error: {
+        code: "tipMismatch",
+        cause: "表示したあとで、先端が変わっている（s1）",
+        nextActions: ["確かめ直す"],
+      },
+    };
+  }
+  bump({
+    nodes: state.nodes.map((n) =>
+      n.id === req.params.nodeId
+        ? { ...n, discarded: { seq: 2, at: "2026-10-20T00:00:00Z", by: { human: true } } }
+        : n,
+    ),
+  });
+  return { ok: true, value: { accepted: true } };
+};
+const browser = await chromium.launch({
+  ...(process.env.TOURYOU_CHROMIUM ? { executablePath: process.env.TOURYOU_CHROMIUM } : {}),
+  args: ["--no-sandbox"],
+});
+const out = {};
+for (const scheme of ["light", "dark"]) {
+  const ctx = await browser.newContext({
+    colorScheme: scheme,
+    viewport: { width: 900, height: 900 },
+  });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+  page.on("dialog", (d) => {
+    errors.push(`dialog:${d.message()}`);
+    d.dismiss();
+  });
+  await page.goto(`${url}/ui#token=${HUMAN}`);
+  await page.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+  out[scheme] = {
+    urlAfter: page.url(),
+    xss: await page.evaluate(() => window.__xss ?? null),
+    imgCount: await page.locator("#view img, #view script").count(),
+    treeText: await page.locator("#tree").innerText(),
+    status: await page.locator("#status").innerText(),
+    errors,
+  };
+  await page.screenshot({ path: join(process.env.TOURYOU_OUT ?? ".", `ui-${scheme}.png`) });
+  await ctx.close();
+}
+// 貼り付けの経路
+const ctx = await browser.newContext();
+const page = await ctx.newPage();
+await page.goto(`${url}/ui`);
+out.pasteFormVisible = await page.locator("#auth").isVisible();
+await page.fill("#token", "wrong-token-wrong-token-wrong-token-1");
+await page.click("button[type=submit]");
+await page.waitForTimeout(800);
+out.wrongStatus = await page.locator("#status").innerText();
+// 人間以外のトークン（403）は、401 と分けて表示する
+await page.fill("#token", credentials.issueNodeToken("root", "integrator"));
+await page.click("button[type=submit]");
+await page.waitForTimeout(800);
+out.nonHumanStatus = await page.locator("#status").innerText();
+const statuses = [];
+page.on("response", (res) => {
+  if (res.url().endsWith("/v1/ui/state")) statuses.push(res.status());
+});
+await page.fill("#token", HUMAN);
+await page.click("button[type=submit]");
+await page.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+await page.waitForFunction(
+  () => document.getElementById("status").innerText.includes("SSE"),
+  null,
+  { timeout: 8000 },
+);
+out.pasteOk = await page.locator("#status").innerText(); // SSE で接続している
+// 変化がない間は、304（描き直さない）
+await page.waitForTimeout(5000);
+out.statusesBeforeChange = [...statuses];
+statuses.length = 0;
+// 更新（状態の変化が、ポーリングで反映される）
+state = {
+  ...state,
+  inbox: [
+    ...state.inbox,
+    {
+      seq: 99,
+      id: "f9",
+      kind: "info",
+      nodeId: "a",
+      dependsOn: [],
+      at: "2026-10-20T00:00:01Z",
+      summary: "新しい項目",
+    },
+  ],
+  lastSeq: 99,
+};
+const t0 = Date.now();
+await page.waitForFunction(
+  () => document.getElementById("inbox").innerText.includes("新しい項目"),
+  null,
+  { timeout: 5000 },
+);
+out.reflectMs = Date.now() - t0;
+out.statusesAfterChange = [...statuses]; // 変わった直後は 200（新しい ETag）、そのあとは 304
+// ---- 操作: 判断への回答 ----
+const ops = {};
+const pageO = await (await browser.newContext()).newPage();
+const opErrors = [];
+pageO.on("pageerror", (e) => opErrors.push(String(e)));
+pageO.on("dialog", (d) => {
+  opErrors.push(`dialog:${d.message()}`);
+  d.dismiss();
+});
+await pageO.goto(`${url}/ui#token=${HUMAN}`);
+await pageO.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+const confirmText = async () =>
+  (await pageO.locator("#confirm").isVisible()) ? pageO.locator("#confirm").innerText() : "";
+// (a) 選択肢で回答 → 確認画面（質問と回答が、もう一度出る）→ 戻る → もう一度 → 二重クリックでも要求は 1 回
+await pageO.locator("#decisions .card").first().waitFor();
+const card1 = pageO.locator("#decisions .card").first();
+await card1.getByRole("button", { name: "A案", exact: true }).click();
+ops.confirmShown =
+  (await confirmText()).includes("A案") && (await confirmText()).includes("判断への回答");
+ops.noRequestBeforeConfirm = calls.length === 0;
+await pageO.getByRole("button", { name: "戻る" }).click();
+ops.backHidesConfirm = !(await pageO.locator("#confirm").isVisible());
+await card1.getByRole("button", { name: "A案", exact: true }).click();
+await pageO.getByRole("button", { name: "この内容で送る" }).dblclick();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("回答を送りました"),
+  null,
+  { timeout: 5000 },
+);
+ops.callsAfterDoubleClick = calls.length; // 1
+// 再開しなかった子: ID と理由が文字として出る。形の違う ID は出さない
+ops.notResumedText = await pageO.locator("#notice").innerText();
+ops.notResumedShown =
+  ops.notResumedText.includes(
+    "再開しなかった子: a（停止未完了のあと止め直したため。新しい子でやり直す）",
+  ) &&
+  !ops.notResumedText.includes("img") &&
+  (await pageO.locator("#notice img, #notice script").count()) === 0;
+ops.answeredParams = calls[0]?.params;
+await pageO
+  .waitForFunction(
+    () => ![...document.querySelectorAll("#decisions button")].some((b) => b.textContent === "A案"),
+    null,
+    {
+      timeout: 5000,
+    },
+  )
+  .then(
+    () => {
+      ops.d1Gone = true;
+    },
+    () => {
+      ops.d1Gone = false;
+    },
+  );
+// (b) 自由入力: 空・制御文字は、確認に進まない。改行つきの回答は、確認に出る
+const card2 = pageO.locator("#decisions .card", { hasText: "自由入力の判断" });
+await card2.getByRole("button", { name: "自由入力で回答する" }).click();
+ops.emptyRejected =
+  (await card2.innerText()).includes("回答が空です") &&
+  !(await pageO.locator("#confirm").isVisible());
+await card2.locator("textarea").fill("a\u0007b");
+await card2.getByRole("button", { name: "自由入力で回答する" }).click();
+ops.controlCharRejected =
+  (await card2.innerText()).includes("使えない文字") &&
+  !(await pageO.locator("#confirm").isVisible());
+await card2.locator("textarea").fill("一行目\n二行目");
+// 状態が更新されて再描画されても、入力中の文は残る
+await new Promise((r) => setTimeout(r, 300));
+bump({});
+await pageO.waitForTimeout(1500);
+ops.draftKeptOnRerender = (await card2.locator("textarea").inputValue()) === "一行目\n二行目";
+await card2.getByRole("button", { name: "自由入力で回答する" }).click();
+ops.multilineInConfirm =
+  (await confirmText()).includes("一行目") && (await confirmText()).includes("二行目");
+// (c) 失敗: 理由が出て、確認に戻る。同じ内容で再送でき、同じ requestId
+await pageO.getByRole("button", { name: "この内容で送る" }).click();
+await pageO.waitForFunction(
+  () => document.getElementById("confirm").innerText.includes("conflict"),
+  null,
+  { timeout: 5000 },
+);
+ops.failureShown = (await confirmText()).includes("別の回答が先に確定している");
+await pageO.getByRole("button", { name: "この内容で送る" }).click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("回答を送りました"),
+  null,
+  { timeout: 5000 },
+);
+const d2Calls = calls.filter((c) => c.params.decisionId === "d2");
+ops.retrySameRequestId = d2Calls.length === 2 && d2Calls[0].requestId === d2Calls[1].requestId;
+ops.requestIdIsUuid = /^[0-9a-f-]{36}$/.test(d2Calls[0]?.requestId ?? "");
+// (d) 長い質問・長い選択肢: 質問は 2,000 文字まで読め、超えたら印。長い選択肢のボタンは無効（自由入力を促す）
+const card3 = pageO.locator("#decisions .card", { hasText: "長い質問" });
+const q3 = await card3.innerText();
+ops.longQuestionShownUpTo2000 = q3.includes("問".repeat(1990)) && q3.includes("…（省略）");
+ops.shortOptionEnabled = await card3.getByRole("button", { name: "短い選択肢" }).isEnabled();
+ops.longOptionDisabled = await card3.locator("button:disabled", { hasText: "…（省略）" }).count();
+ops.longOptionNote = q3.includes("自由入力で回答してください");
+// (e) 429: Retry-After の秒数のあいだ、送れない。時間が来たら、同じ requestId で送れる
+let n429 = 0;
+await pageO.route("**/v1/request", (route) => {
+  n429 += 1;
+  if (n429 > 1) return route.continue();
+  return route.fulfill({
+    status: 429,
+    headers: { "retry-after": "2", "content-type": "application/json" },
+    body: JSON.stringify({
+      ok: false,
+      error: { code: "tooManyRequests", cause: "要求が多すぎる" },
+    }),
+  });
+});
+await card3.getByRole("button", { name: "短い選択肢" }).click();
+ops.longQuestionInConfirm = (await confirmText()).includes("問".repeat(1990));
+await pageO.getByRole("button", { name: "この内容で送る" }).click();
+await pageO.waitForFunction(
+  () => document.getElementById("confirm").innerText.includes("tooManyRequests"),
+  null,
+  { timeout: 5000 },
+);
+ops.sendDisabledWhile429 = await pageO.locator("#confirm button.primary").isDisabled();
+ops.sendLabelWhile429 = await pageO.locator("#confirm button.primary").innerText();
+await pageO.waitForFunction(
+  () => !document.querySelector("#confirm button.primary").disabled,
+  null,
+  { timeout: 6000 },
+);
+ops.sendEnabledAfterWait = await pageO.locator("#confirm button.primary").isEnabled();
+await pageO.getByRole("button", { name: "この内容で送る" }).click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("回答を送りました"),
+  null,
+  { timeout: 5000 },
+);
+await pageO.unroute("**/v1/request");
+const d3Calls = calls.filter((c) => c.params.decisionId === "d3");
+ops.answeredOnceAfter429 = d3Calls.length === 1; // 429 は、サーバーに届いていない（route で止めた）。待ったあとの 1 回だけが届く
+// (f) 子が書いた質問・選択肢の XSS 文字列は、実行されない（確認画面でも）
+ops.xssNotExecuted = (await pageO.evaluate(() => window.__xss ?? null)) === null;
+// (g) 拡張要求の判定: 対象を表示 → 確認（対象つき）→ 送信。許可する対象は送らない（daemon が記録済みの対象を使う）
+const ext1 = pageO.locator("#decisions .card", { hasText: "テストを足したい" });
+await ext1.waitFor();
+ops.ext1ShowsTarget = (await ext1.innerText()).includes("src/ok.ts");
+await ext1.getByRole("button", { name: "承認", exact: true }).click();
+const extConfirm = await confirmText();
+ops.ext1ConfirmShowsTarget = extConfirm.includes("src/ok.ts") && extConfirm.includes("承認");
+await pageO.getByRole("button", { name: "この内容で送る" }).click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("拡張要求を承認しました"),
+  null,
+  { timeout: 5000 },
+);
+const decideCalls = calls.filter((c) => c.operation === "scope.decide");
+ops.ext1SentOnce =
+  decideCalls.length === 1 &&
+  JSON.stringify(decideCalls[0].params) ===
+    JSON.stringify({ extensionId: "x1", decision: "approve" });
+// 隠れた対象（x2）: 値は画面に出ない。承認・切り出しは無効で、却下だけ押せる
+const ext2 = pageO.locator("#decisions .card", { hasText: "外へ書きたい" });
+await ext2.waitFor();
+ops.ext2HidesValue = !(await ext2.innerText()).includes("outside");
+ops.ext2ApproveDisabled = await ext2
+  .getByRole("button", { name: "承認", exact: true })
+  .isDisabled();
+ops.ext2SplitDisabled = await ext2
+  .getByRole("button", { name: "切り出し", exact: true })
+  .isDisabled();
+ops.ext2RejectEnabled = await ext2.getByRole("button", { name: "却下", exact: true }).isEnabled();
+// 子が書いた理由の XSS 文字列（x3）は、実行されない
+ops.ext3Rendered =
+  (await pageO.locator("#decisions .card", { hasText: "pnpm test" }).count()) === 1;
+// (h) 最終削除: 打ち込むまで送れない。一致したら送れる。送る params は nodeId だけ
+const sendBtn = () => pageO.locator("#confirm button.primary");
+const typedArea = () => pageO.locator("#confirm textarea");
+const arch1 = pageO.locator("#purge .card", { hasText: "arch1" }).first();
+await arch1.waitFor();
+await arch1.getByRole("button", { name: "最終削除…（墓標は既定）" }).click();
+await pageO.locator("#confirm").waitFor();
+const purgeConfirm = await confirmText();
+ops.purgeConfirmShowsPreview =
+  purgeConfirm.includes("2 件") &&
+  purgeConfirm.includes("削除する木") &&
+  purgeConfirm.includes("1 件の、破棄した成果");
+ops.purgeSendDisabledAtFirst = await sendBtn().isDisabled();
+for (const wrong of ["arch", "arch1 ", " arch1", "ARCH1", "ａｒｃｈ１"]) {
+  await typedArea().fill(wrong);
+  if (!(await sendBtn().isDisabled())) ops.purgeWrongTypedEnabled = wrong;
+}
+ops.purgeWrongTypedStayDisabled = ops.purgeWrongTypedEnabled === undefined;
+// 画面の無効化を迂回して（disabled を外して）クリックしても、要求は出ない
+await typedArea().fill("arch");
+await pageO.evaluate(() => {
+  const b = document.querySelector("#confirm button.primary");
+  b.disabled = false;
+  b.click();
+});
+await pageO.waitForTimeout(400);
+ops.purgeForcedClickNoRequest = calls.filter((c) => c.operation === "node.purge").length === 0;
+// 別の木（arch2）の保留の理由を入力しておく（あとで、arch1 が消えて描き直されても、残る）
+await pageO
+  .locator("#purge .card", { hasText: "arch2" })
+  .locator("textarea")
+  .first()
+  .fill("調査中");
+await typedArea().fill("arch1");
+ops.purgeSendEnabledWhenTyped = await sendBtn().isEnabled();
+ops.purgeNoRequestBeforeSend = calls.filter((c) => c.operation === "node.purge").length === 0;
+await sendBtn().click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("最終削除しました"),
+  null,
+  { timeout: 5000 },
+);
+const purgeCalls = calls.filter((c) => c.operation === "node.purge");
+ops.purgeSentOnce =
+  purgeCalls.length === 1 &&
+  JSON.stringify(purgeCalls[0].params) ===
+    JSON.stringify({ nodeId: "arch1", expectNodeIds: ["arch1", "arch1c"] });
+await pageO.waitForFunction(
+  () => !document.getElementById("purge").innerText.includes("arch1"),
+  null,
+  {
+    timeout: 5000,
+  },
+);
+ops.purgeCardGone = true;
+ops.reasonDraftKeptAfterRerender =
+  (await pageO
+    .locator("#purge .card", { hasText: "arch2" })
+    .locator("textarea")
+    .first()
+    .inputValue()) === "調査中";
+// 通信に失敗したら、通知は赤（.notice.bad）で出る
+await pageO.route("**/v1/request", (route) => route.abort());
+await pageO
+  .locator("#purge .card", { hasText: "arch2" })
+  .getByRole("button", { name: "最終削除…（墓標は既定）" })
+  .click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").className === "notice bad",
+  null,
+  { timeout: 5000 },
+);
+ops.failureNoticeIsRed =
+  (await pageO.locator("#notice").innerText()).includes("失敗") &&
+  (await pageO.locator("#notice.bad").count()) === 1;
+await pageO.unroute("**/v1/request");
+// 実行できない木（arch2）: 理由が出て、打ち込みの欄もなく、送れない
+await pageO
+  .locator("#purge .card", { hasText: "arch2" })
+  .getByRole("button", { name: "最終削除…（墓標は既定）" })
+  .click();
+await pageO.locator("#confirm").waitFor();
+const blockedText = await confirmText();
+ops.blockedShowsReason =
+  blockedText.includes("木の外のノードが依存している") &&
+  blockedText.includes("いま最終削除できません");
+ops.blockedSendDisabled = await sendBtn().isDisabled();
+ops.blockedNoTypedArea = (await typedArea().count()) === 0;
+await pageO.getByRole("button", { name: "戻る" }).click();
+// 保留（取り消せる操作。打ち込みなしの通常の確認）
+await pageO
+  .locator("#purge .card", { hasText: "arch2" })
+  .getByRole("button", { name: "自動削除を保留（30 日）…" })
+  .click();
+await pageO.locator("#confirm").waitFor();
+ops.holdNoTypedArea = (await typedArea().count()) === 0;
+const holdConfirm = await confirmText();
+ops.holdConfirmShowsCurrentHold =
+  holdConfirm.includes("今の保留") &&
+  holdConfirm.includes("調査中の保留") &&
+  holdConfirm.includes("2027-01-01");
+await sendBtn().click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("保留しました"),
+  null,
+  { timeout: 5000 },
+);
+const holdCalls = calls.filter((c) => c.operation === "node.purgeHold");
+ops.holdSendsDays30 =
+  holdCalls.length === 1 &&
+  holdCalls[0].params.reason === "調査中" &&
+  holdCalls[0].params.days === 30 &&
+  holdCalls[0].params.until === undefined;
+// 通知に、daemon が決めた期限が出る
+const holdNotice = await pageO.locator("#notice").innerText();
+ops.holdNoticeShowsUntil =
+  holdNotice.includes("期限: ") && /期限: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/.test(holdNotice);
+// 保留の期限「その他」: 範囲外は確認に進まない。45 日・365 日は、days で送る（期限は daemon が決める）
+const arch2Card = pageO.locator("#purge .card", { hasText: "arch2" });
+await arch2Card.locator("textarea").nth(1).fill("400");
+await arch2Card.getByRole("button", { name: "指定した日数で保留…" }).click();
+ops.daysOutOfRangeNoConfirm =
+  (await arch2Card.innerText()).includes("1〜365") &&
+  !(await pageO.locator("#confirm").isVisible());
+await arch2Card.locator("textarea").nth(1).fill("45");
+await arch2Card.getByRole("button", { name: "指定した日数で保留…" }).click();
+await pageO.locator("#confirm").waitFor();
+const daysConfirm = await confirmText();
+await sendBtn().click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("保留しました"),
+  null,
+  { timeout: 5000 },
+);
+const holdCalls2 = calls.filter((c) => c.operation === "node.purgeHold");
+ops.days45Sent =
+  holdCalls2.length === 2 &&
+  holdCalls2.at(-1)?.params.days === 45 &&
+  holdCalls2.at(-1)?.params.until === undefined &&
+  daysConfirm.includes("45 日") &&
+  daysConfirm.includes("daemon の時計");
+await arch2Card.locator("textarea").nth(1).fill("365");
+await arch2Card.getByRole("button", { name: "指定した日数で保留…" }).click();
+await pageO.locator("#confirm").waitFor();
+await sendBtn().click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("保留しました"),
+  null,
+  { timeout: 5000 },
+);
+const last365 = calls.filter((c) => c.operation === "node.purgeHold").at(-1)?.params;
+ops.days365SentAsIs = last365?.days === 365 && last365?.until === undefined;
+// (i) 保管: 一覧は、読み込みボタンで取る。件名は信頼できない入力（制御文字を除き、実行されない）
+ops.keptNotLoadedAtFirst = (await pageO.locator("#kept .card").count()) === 0;
+await pageO.getByRole("button", { name: "一覧を読み込む" }).click();
+await pageO.locator("#kept .card").first().waitFor();
+const keptText = await pageO.locator("#kept").innerText();
+ops.keptShowsFields =
+  keptText.includes("k1-aaaaaaaaaaaa") &&
+  keptText.includes("arch1c") &&
+  keptText.includes("先端 aaaaaaaaaaaa");
+ops.keptSubjectCleaned = !keptText.includes("\u001b");
+ops.keptTipNotFull = !keptText.includes("a".repeat(13));
+ops.badKeyHasNoActions =
+  (await pageO.locator("#kept .card", { hasText: "bad key!" }).getByRole("button").count()) === 0;
+await pageO.locator("#kept .card").first().getByRole("button", { name: "保管を消す…" }).click();
+await pageO.locator("#confirm").waitFor();
+ops.dropSendDisabledAtFirst = await sendBtn().isDisabled();
+await typedArea().fill("k1-aaaaaaaaaaa");
+ops.dropShortStillDisabled = await sendBtn().isDisabled();
+await typedArea().fill("k1-aaaaaaaaaaaa");
+await sendBtn().click();
+await pageO.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("保管を消しました"),
+  null,
+  { timeout: 5000 },
+);
+const dropCalls = calls.filter((c) => c.operation === "node.discardedDrop");
+ops.dropSentWithExpectTip =
+  dropCalls.length === 1 &&
+  JSON.stringify(dropCalls[0].params) ===
+    JSON.stringify({ target: "k1-aaaaaaaaaaaa", expectTip: "a".repeat(40) });
+await pageO.waitForFunction(
+  () => document.getElementById("kept").innerText.includes("保管: 1 件"),
+  null,
+  {
+    timeout: 5000,
+  },
+);
+ops.keptReloadedAfterDrop = true;
+ops.errors = opErrors;
+out.operations = ops;
+
+// ---- 回収の指示----
+const rc = {};
+const pageR = await (await browser.newContext()).newPage();
+const rcErrors = [];
+pageR.on("pageerror", (e) => rcErrors.push(String(e)));
+pageR.on("dialog", (d) => {
+  rcErrors.push(`dialog:${d.message()}`);
+  d.dismiss();
+});
+await pageR.goto(`${url}/ui#token=${HUMAN}`);
+await pageR.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+const row = (id) => pageR.locator("#tree .node", { hasText: id }).filter({ hasText: "停止" });
+const instructCalls = () => calls.filter((c) => c.operation === "node.reclaimInstruct");
+// (a) ボタンは、停止したノードで、指示済みでないものだけ
+rc.buttonOnS1 =
+  (await row("s1").getByRole("button", { name: "破棄して回収を指示…" }).count()) === 1;
+rc.noButtonOnS3 =
+  (await row("s3").getByRole("button").count()) === 0 &&
+  (await row("s3").innerText()).includes("破棄を指示済み");
+rc.noButtonOnRunning =
+  (await pageR
+    .locator("#tree .node", { hasText: "実行" })
+    .getByRole("button", { name: "破棄して回収を指示…" })
+    .count()) === 0;
+// (b) 押す → 事前確認の内容
+await row("s1").getByRole("button", { name: "破棄して回収を指示…" }).click();
+await pageR.locator("#confirm").waitFor();
+const text1 = await pageR.locator("#confirm").innerText();
+rc.confirmShowsLoss =
+  text1.includes("取り消せません") &&
+  text1.includes("プロセス 4242") &&
+  text1.includes("統合されていないコミット 2 件") &&
+  text1.includes("未追跡のファイル 3 件");
+rc.confirmShowsTip12 = text1.includes("aaaaaaaaaaaa") && !text1.includes("aaaaaaaaaaaaa");
+rc.subjectAsText =
+  text1.includes("<img src=x onerror=") &&
+  (await pageR.evaluate(() => window.__xss ?? null)) === null;
+rc.requestBeforeConfirm = instructCalls().length === 0;
+// (c) 打ち込み: 一致するまで送れない
+const rcSend = pageR.locator("#confirm button.primary");
+rc.sendDisabledInitially = await rcSend.isDisabled();
+for (const wrong of ["S1", " s1", "s1 ", "ｓ１", "s"]) {
+  await pageR.locator("#confirm textarea").fill(wrong);
+  if (await rcSend.isEnabled()) rc.wrongTypedEnabled = wrong;
+}
+// 画面の無効化を迂回しても、送らない
+await pageR.locator("#confirm textarea").fill("S1");
+await rcSend.evaluate((b) => {
+  b.disabled = false;
+  b.click();
+});
+await pageR.waitForTimeout(400);
+rc.bypassNoRequest = instructCalls().length === 0;
+// (d) 見せたあとで、先端が変わる → 送ると tipMismatch。確かめ直しを案内する（同じ内容の再送は、案内しない）
+currentTips.s1 = "b".repeat(40);
+await pageR.locator("#confirm textarea").fill("s1");
+rc.sendEnabledWhenMatched = await rcSend.isEnabled();
+await rcSend.click();
+await pageR.waitForFunction(
+  () => document.getElementById("confirm").innerText.includes("tipMismatch"),
+  null,
+  { timeout: 5000 },
+);
+const text2 = await pageR.locator("#confirm").innerText();
+rc.mismatchGuidance =
+  text2.includes("確かめ直してください") && !text2.includes("同じ内容で、もう一度送れます");
+rc.firstExpectTips =
+  JSON.stringify(instructCalls()[0]?.params.expectTips) === JSON.stringify({ s1: "a".repeat(40) });
+// (e) やり直す: 戻る → もう一度 → 新しい先端が見える → 通る。requestId は、確認ごとに新しい。二重クリックでも 1 回
+await pageR.getByRole("button", { name: "戻る" }).click();
+await row("s1").getByRole("button", { name: "破棄して回収を指示…" }).click();
+await pageR.locator("#confirm").waitFor();
+rc.newTipShown = (await pageR.locator("#confirm").innerText()).includes("bbbbbbbbbbbb");
+await pageR.locator("#confirm textarea").fill("s1");
+await rcSend.dblclick();
+await pageR.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("破棄を指示しました"),
+  null,
+  { timeout: 5000 },
+);
+const ic = instructCalls();
+rc.callsAfterRetry = ic.length; // 2（1 回目の失敗と、やり直し。二重クリックで増えない）
+rc.secondExpectTips =
+  JSON.stringify(ic[1]?.params.expectTips) === JSON.stringify({ s1: "b".repeat(40) });
+rc.newRequestId = ic.length === 2 && ic[0].requestId !== ic[1].requestId;
+await pageR.waitForFunction(
+  () =>
+    ![...document.querySelectorAll("#tree .node")].some(
+      (n) => n.textContent.includes("s1") && n.querySelector("button"),
+    ),
+  null,
+  { timeout: 5000 },
+);
+rc.s1NowMarkedDiscarded = (await row("s1").innerText()).includes("破棄を指示済み");
+// (f) 失われるものを調べられないノードは、送れない（cli で確かめる案内）
+await row("s2").getByRole("button", { name: "破棄して回収を指示…" }).click();
+await pageR.locator("#confirm").waitFor();
+const text3 = await pageR.locator("#confirm").innerText();
+rc.unknownBlocked = text3.includes("調べられなかった") && text3.includes("touryou reclaim");
+rc.unknownNoTypedBox =
+  (await pageR.locator("#confirm textarea").count()) === 0 &&
+  (await pageR.locator("#confirm button.primary").isDisabled());
+rc.errors = rcErrors;
+out.reclaim = rc;
+// SSE の同時接続は 4 本まで。使い終わったページは閉じる
+await pageR.context().close();
+
+// ---- 停止の宣言----
+const cs = {};
+const pageC = await (await browser.newContext({ viewport: { width: 900, height: 900 } })).newPage();
+const csErrors = [];
+pageC.on("pageerror", (e) => csErrors.push(String(e)));
+pageC.on("dialog", (d) => {
+  csErrors.push(`dialog:${d.message()}`);
+  d.dismiss();
+});
+await pageC.goto(`${url}/ui#token=${HUMAN}`);
+await pageC.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+const crow = (id) =>
+  pageC.locator("#tree .node", { hasText: id }).filter({ hasText: "停止未完了" });
+const confirmCalls = () => calls.filter((c) => c.operation === "node.confirmStopped");
+// (a) 出し分け: stopDelegated の c1 だけに出す（c2・停止したノード・実行中のノードには出さない）
+cs.buttonOnC1 = (await crow("c1").getByRole("button", { name: "止めたと宣言…" }).count()) === 1;
+cs.noButtonOnC2 = (await crow("c2").getByRole("button", { name: "止めたと宣言…" }).count()) === 0;
+cs.onlyOneButton = (await pageC.getByRole("button", { name: "止めたと宣言…" }).count()) === 1;
+// (b) 根拠に XSS の文字列と余分な空白。確認には、整えた値を文字として出す
+const NOTE = `  ${XSS}   アーカイブ した  `;
+const CLEAN = `${XSS} アーカイブ した`;
+await crow("c1").locator("textarea").fill(NOTE);
+await crow("c1").getByRole("button", { name: "止めたと宣言…" }).click();
+await pageC.locator("#confirm").waitFor();
+const ctext = await pageC.locator("#confirm").innerText();
+cs.confirmShowsNoteAsText =
+  ctext.includes(CLEAN) && (await pageC.evaluate(() => window.__xss ?? null)) === null;
+cs.noInjectedElements = (await pageC.locator("#confirm img, #confirm script").count()) === 0;
+cs.confirmShowsIrreversible = ctext.includes("取り消せません") && ctext.includes("c1");
+cs.requestBeforeConfirm = confirmCalls().length === 0;
+// 確認の表示（打ち込みの欄を含む）を、1 枚に撮る
+await pageC.locator("#confirm").scrollIntoViewIfNeeded();
+await pageC
+  .locator("#confirm")
+  .screenshot({ path: join(process.env.TOURYOU_OUT ?? ".", "ui-confirm-stopped.png") });
+// (c) 打ち込みの誤りでは送れない。disabled を外して押しても送らない
+const csSend = pageC.locator("#confirm button.primary");
+cs.sendDisabledInitially = await csSend.isDisabled();
+for (const wrong of ["C1", " c1", "c1 ", "ｃ１", "c"]) {
+  await pageC.locator("#confirm textarea").fill(wrong);
+  if (await csSend.isEnabled()) cs.wrongTypedEnabled = wrong;
+}
+await pageC.locator("#confirm textarea").fill("C1");
+await csSend.evaluate((b) => {
+  b.disabled = false;
+  b.click();
+});
+await pageC.waitForTimeout(400);
+cs.bypassNoRequest = confirmCalls().length === 0;
+// (d) 一致すれば送る。params は、見せた値（整えた根拠）と一致する。二重クリックでも 1 回
+await pageC.locator("#confirm textarea").fill("c1");
+await csSend.dblclick();
+await pageC.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("止めたと宣言しました"),
+  null,
+  { timeout: 5000 },
+);
+const cc = confirmCalls();
+cs.calls = cc.length;
+cs.params = JSON.stringify(cc[0]?.params) === JSON.stringify({ nodeId: "c1", note: CLEAN });
+// (e) 停止済みになったら、ボタンは消える
+await pageC.waitForFunction(
+  () =>
+    ![...document.querySelectorAll("#tree button")].some((b) => b.textContent === "止めたと宣言…"),
+  null,
+  { timeout: 5000 },
+);
+cs.buttonGoneAfterStopped = true;
+cs.errors = csErrors;
+out.confirmStopped = cs;
+await pageC.context().close();
+
+// ---- Desktop のアダプタを配線した daemon（compose と同じ stopDelegatedOf）----
+// 木全体が Desktop の子なので、停止未完了の子（c1・c2）のどちらにも、停止の宣言が出る。daemon の再起動のあと（アダプタが何も
+// 管理していない）を想定して、起動していないアダプタで確かめる。
+const desktop = new DesktopRuntimeAdapter({
+  sink: { record: () => ({ ok: true }), recordAll: () => ({ ok: true }) },
+});
+const dsrv = createApiServer({
+  credentials,
+  getState: () => state,
+  handlers,
+  stopDelegated: stopDelegatedOf(desktop),
+});
+const dUrl = (await dsrv.listen(0)).url;
+const dk = {};
+const pageD = await (await browser.newContext()).newPage();
+const dkErrors = [];
+pageD.on("pageerror", (e) => dkErrors.push(String(e)));
+await pageD.goto(`${dUrl}/ui#token=${HUMAN}`);
+await pageD.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+const drow = (id) =>
+  pageD.locator("#tree .node", { hasText: id }).filter({ hasText: "停止未完了" });
+dk.buttonOnC2 = (await drow("c2").getByRole("button", { name: "止めたと宣言…" }).count()) === 1;
+dk.noButtonOnRunning =
+  (await pageD
+    .locator("#tree .node", { hasText: "実行" })
+    .getByRole("button", { name: "止めたと宣言…" })
+    .count()) === 0;
+const before = confirmCalls().length;
+await drow("c2").getByRole("button", { name: "止めたと宣言…" }).click();
+await pageD.locator("#confirm").waitFor();
+await pageD.locator("#confirm textarea").fill("c2");
+await pageD.locator("#confirm button.primary").click();
+await pageD.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("止めたと宣言しました"),
+  null,
+  { timeout: 5000 },
+);
+const dcalls = confirmCalls().slice(before);
+dk.params =
+  dcalls.length === 1 && JSON.stringify(dcalls[0].params) === JSON.stringify({ nodeId: "c2" });
+dk.errors = dkErrors;
+out.desktopWired = dk;
+await pageD.context().close();
+await dsrv.close();
+
+// ---- フックの結び付けを外す----
+const hu = {};
+const pageH = await (await browser.newContext({ viewport: { width: 900, height: 900 } })).newPage();
+const huErrors = [];
+pageH.on("pageerror", (e) => huErrors.push(String(e)));
+pageH.on("dialog", (d) => {
+  huErrors.push(`dialog:${d.message()}`);
+  d.dismiss();
+});
+await pageH.goto(`${url}/ui#token=${HUMAN}`);
+await pageH.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+const HU = "フックの結び付けを外す…";
+const hrow = (id) =>
+  pageH
+    .locator("#tree .node")
+    .filter({ has: pageH.locator("span", { hasText: new RegExp(`^${id}$`) }) });
+const unbindCalls = () => calls.filter((c) => c.operation === "node.hookUnbind");
+// (a) 出し分け: 動いている子（a・constructor）だけ。統合ノード（root・m1）・停止未完了（c1）・停止（s1）には出さない
+hu.buttonOnA = (await hrow("a").getByRole("button", { name: HU }).count()) === 1;
+hu.buttonOnConstructor =
+  (await hrow("constructor").getByRole("button", { name: HU }).count()) === 1;
+hu.noButtonOnIntegrators =
+  (await hrow("root").getByRole("button", { name: HU }).count()) === 0 &&
+  (await hrow("m1").getByRole("button", { name: HU }).count()) === 0;
+hu.noButtonOnStopped =
+  (await hrow("c1").getByRole("button", { name: HU }).count()) === 0 &&
+  (await hrow("s1").getByRole("button", { name: HU }).count()) === 0;
+hu.buttonCount = await pageH.getByRole("button", { name: HU }).count();
+// (b) 確認（2 段）。打ち込みの欄はなく、押すまで送らない。XSS の文字列（a の受信箱の要約）は、文字として出るだけ
+await hrow("a").getByRole("button", { name: HU }).click();
+await pageH.locator("#confirm").waitFor();
+const htext = await pageH.locator("#confirm").innerText();
+hu.confirmShowsNode =
+  htext.includes("a") &&
+  htext.includes("次に来たセッションに結び直す") &&
+  htext.includes("/clear・--resume で session_id が変わって");
+hu.confirmShowsWarning = htext.includes("トークンが漏れた疑い");
+hu.noTypedBox = (await pageH.locator("#confirm textarea").count()) === 0;
+hu.requestBeforeConfirm = unbindCalls().length === 0;
+hu.noXss =
+  (await pageH.evaluate(() => window.__xss ?? null)) === null &&
+  (await pageH.locator("#confirm img, #confirm script, #tree img, #tree script").count()) === 0;
+// (c) 送る。params は { nodeId: "a" }。二重クリックでも 1 回。結果は「外しました」
+await pageH.locator("#confirm button.primary").dblclick();
+await pageH.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("外しました"),
+  null,
+  { timeout: 5000 },
+);
+hu.texts = [await pageH.locator("#notice").innerText()];
+hu.calls = unbindCalls().length;
+hu.params = JSON.stringify(unbindCalls()[0]?.params) === JSON.stringify({ nodeId: "a" });
+// (d) 2 回目（daemon が再送として返す）は「すでに記録済み」。別の確認なので、requestId は新しい
+await hrow("a").getByRole("button", { name: HU }).click();
+await pageH.locator("#confirm button.primary").click();
+await pageH.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("すでに記録済み"),
+  null,
+  { timeout: 5000 },
+);
+hu.texts.push(await pageH.locator("#notice").innerText());
+hu.newRequestId = unbindCalls()[1]?.requestId !== unbindCalls()[0]?.requestId;
+// (e) 結び付けがない（constructor）は「ありませんでした」
+await hrow("constructor").getByRole("button", { name: HU }).click();
+await pageH.locator("#confirm button.primary").click();
+await pageH.waitForFunction(
+  () => document.getElementById("notice").innerText.includes("ありませんでした"),
+  null,
+  { timeout: 5000 },
+);
+hu.texts.push(await pageH.locator("#notice").innerText());
+// 3 つの通知の全文（外した・再送・なかった）
+hu.threeTexts =
+  hu.texts.length === 3 &&
+  hu.texts[0].includes("外しました") &&
+  hu.texts[1].includes("すでに記録済み") &&
+  hu.texts[2].includes("ありませんでした");
+hu.errors = huErrors;
+out.hookUnbind = hu;
+await pageH.context().close();
+await pageO.context().close();
+
+// SSE が使えないとき（上限 0 で、429）は、ポーリング（ETag）に切り替わる
+const poll = createApiServer({
+  credentials,
+  getState: () => state,
+  handlers: {},
+  sse: { maxConnections: 0 },
+});
+const pollUrl = (await poll.listen(0)).url;
+const page2 = await (await browser.newContext()).newPage();
+const pollStatuses = [];
+page2.on("response", (res) => {
+  if (res.url().endsWith("/v1/ui/state")) pollStatuses.push(res.status());
+});
+await page2.goto(`${pollUrl}/ui#token=${HUMAN}`);
+await page2.waitForFunction(
+  () => document.getElementById("status").innerText.includes("ポーリング"),
+  null,
+  { timeout: 8000 },
+);
+out.fallbackStatus = await page2.locator("#status").innerText();
+await page2.waitForTimeout(5000);
+out.fallbackStatuses = [...pollStatuses]; // 200 のあと 304
+// 429 のときは、Retry-After（5 秒）より前に、再接続しない
+let retryRequests = 0;
+const page4 = await (await browser.newContext()).newPage();
+page4.on("request", (req) => {
+  if (req.url().endsWith("/v1/events")) retryRequests += 1;
+});
+await page4.goto(`${pollUrl}/ui#token=${HUMAN}`);
+await page4.waitForTimeout(4000);
+out.eventRequestsWithin4sOf429 = retryRequests; // 1（Retry-After の 5 秒より前には、再接続しない）
+// 通知が続いても、状態の取り直しは、最短 1 秒ごと（間引き）
+const pageT = await (await browser.newContext()).newPage();
+let stateRequests = 0;
+pageT.on("request", (req) => {
+  if (req.url().endsWith("/v1/ui/state")) stateRequests += 1;
+});
+await pageT.goto(`${url}/ui#token=${HUMAN}`);
+await pageT.waitForFunction(
+  () => document.getElementById("status").innerText.includes("SSE"),
+  null,
+  { timeout: 8000 },
+);
+await pageT.waitForTimeout(1500);
+stateRequests = 0;
+const tt = Date.now();
+for (let i = 0; i < 30; i++) {
+  state = { ...state, lastSeq: state.lastSeq + 1 };
+  await pageT.waitForTimeout(100); // 3 秒の間、100ms ごとに変える（SSE の通知は 250ms ごと）
+}
+out.stateRequestsDuring3sOfChanges = stateRequests; // 最短 1 秒ごとなので、4 回前後（30 回ではない）
+out.throttleWindowMs = Date.now() - tt;
+// ---- 取り消せない操作の確認待ち（Desktop の木）----
+// 人間のトークンで最終削除を呼ぶと、確認待ちになり、ページのいちばん上（スクロールなしで見える位置）に欄が出る。端末に出た
+// コードを打つと、1 回だけ実行する。画面にコードは出ない。
+{
+  const cf = {};
+  const terminal = [];
+  let purged = 0;
+  let shift = 0;
+  let failPurge = false;
+  const gate = createConfirmationGate({
+    log: { state: () => state, appendAll: () => ({ ok: true, value: [] }) },
+    clock: () => "2026-10-28T00:00:00Z",
+    nowMs: () => Date.now() + shift,
+    writeTerminal: (l) => terminal.push(l),
+  });
+  const csrv = createApiServer({
+    credentials,
+    getState: () => state,
+    handlers: gate.wrap({
+      ...handlers,
+      "node.purge": () => {
+        if (failPurge)
+          return {
+            ok: false,
+            error: { code: "purgeStale", cause: "木が変わった", nextActions: ["確かめ直す"] },
+          };
+        purged += 1;
+        return { ok: true, value: { purged: ["t"] } };
+      },
+    }),
+    confirmations: () => gate.pending(),
+    confirmationsVersion: () => gate.version(),
+  });
+  const cUrl = (await csrv.listen(0)).url;
+  const pageCf = await (await browser.newContext()).newPage();
+  const cfErrors = [];
+  pageCf.on("pageerror", (e) => cfErrors.push(String(e)));
+  await pageCf.goto(`${cUrl}/ui#token=${HUMAN}`);
+  await pageCf.waitForSelector("#view:not([hidden])", { timeout: 8000 });
+  cf.hiddenWithoutPending = !(await pageCf.locator("#approvals").isVisible());
+  const asked = await fetch(`${cUrl}/v1/request`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      requestId: "cf-purge-1",
+      operation: "node.purge",
+      params: { nodeId: "t" },
+    }),
+  }).then((x) => x.json());
+  cf.requiredCode = asked.error?.code;
+  await pageCf.locator("#approvals").waitFor({ timeout: 8000 });
+  const box = await pageCf.locator("#approvals").boundingBox();
+  const vh = pageCf.viewportSize()?.height ?? 0;
+  cf.visibleWithoutScroll = box !== null && box.y >= 0 && box.y < vh;
+  cf.focusedInput = await pageCf.evaluate(
+    () =>
+      document.activeElement?.tagName === "TEXTAREA" &&
+      document.activeElement?.dataset.approval !== undefined,
+  );
+  const m = terminal[0]?.match(/確認コード ([0-9A-Z]{4})-([0-9A-Z]{4})/);
+  const code = `${m?.[1] ?? ""}${m?.[2] ?? ""}`;
+  const text = await pageCf.locator("#approvals").innerText();
+  cf.codeNotOnPage = code !== "" && !text.includes(code) && !text.includes(`${m?.[1]}-${m?.[2]}`);
+  cf.shortIdMatchesTerminal = gate
+    .pending()
+    .every((p) => terminal[0].includes(`確認 ${p.shortId}…`) && text.includes(`${p.shortId}…`));
+  cf.notPurgedBeforeConfirm = purged === 0;
+  // 誤ったコードは拒否され、欄に理由が出る
+  await pageCf.locator("#approvals textarea").fill("00000000");
+  await pageCf.getByRole("button", { name: "確認して実行する" }).click();
+  await pageCf.locator("#approvals .error").waitFor({ timeout: 8000 });
+  cf.wrongCodeRejected =
+    (await pageCf.locator("#approvals .error").innerText()).includes("confirmationInvalid") &&
+    purged === 0;
+  await pageCf.locator("#approvals textarea").fill(code.toLowerCase());
+  await pageCf.getByRole("button", { name: "確認して実行する" }).click();
+  await pageCf.waitForFunction(() => document.getElementById("approvals").hidden === true, null, {
+    timeout: 8000,
+  });
+  cf.purgedOnce = purged === 1;
+  cf.doneNotice = (await pageCf.locator("#notice").innerText()).includes("確認して実行しました");
+  const ask = (requestId) =>
+    fetch(`${cUrl}/v1/request`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${HUMAN}`, "content-type": "application/json" },
+      body: JSON.stringify({ requestId, operation: "node.purge", params: { nodeId: "t" } }),
+    }).then((x) => x.json());
+  const codeAt = (k) => {
+    const mm = terminal[k]?.match(/確認コード ([0-9A-Z]{4})-([0-9A-Z]{4})/);
+    return `${mm?.[1] ?? ""}${mm?.[2] ?? ""}`;
+  };
+  const noticeText = () => pageCf.locator("#notice").innerText();
+  const noticeBad = () =>
+    pageCf.evaluate(() => document.getElementById("notice").className.includes("bad"));
+  // 5 回目の誤り: 確認待ちは消えるが、理由はページ全体の赤い通知に残る
+  await ask("cf-purge-2");
+  await pageCf.locator("#approvals").waitFor({ timeout: 8000 });
+  for (let k = 0; k < 5; k++) {
+    await pageCf.locator("#approvals textarea").fill("00000000");
+    await pageCf.getByRole("button", { name: "確認して実行する" }).click();
+    await pageCf.waitForFunction(
+      () =>
+        document.getElementById("approvals").hidden ||
+        document.querySelectorAll("#approvals .error").length > 0,
+      null,
+      { timeout: 8000 },
+    );
+    if (k < 4) await pageCf.locator("#approvals .error").waitFor({ timeout: 8000 });
+  }
+  await pageCf.waitForFunction(() => document.getElementById("approvals").hidden === true, null, {
+    timeout: 8000,
+  });
+  cf.fifthWrongNotice = (await noticeText()).includes("試行の上限") && (await noticeBad());
+  // 期限切れ: 欄が消えても、理由が赤い通知に出る
+  await ask("cf-purge-3");
+  await pageCf.locator("#approvals").waitFor({ timeout: 8000 });
+  shift = 6 * 60_000;
+  await pageCf.locator("#approvals textarea").fill(codeAt(terminal.length - 1));
+  await pageCf.getByRole("button", { name: "確認して実行する" }).click();
+  await pageCf.waitForFunction(
+    () => document.getElementById("notice").innerText.includes("確認できませんでした"),
+    null,
+    { timeout: 8000 },
+  );
+  const expiredText = await noticeText();
+  cf.expiredNotice =
+    (expiredText.includes("confirmationExpired") || expiredText.includes("confirmationInvalid")) &&
+    (await noticeBad());
+  shift = 0;
+  // 実行のあとの失敗（purgeStale）: 赤い通知に理由が出る。実行は数えない
+  failPurge = true;
+  await ask("cf-purge-4");
+  await pageCf.locator("#approvals").waitFor({ timeout: 8000 });
+  await pageCf.locator("#approvals textarea").fill(codeAt(terminal.length - 1));
+  await pageCf.getByRole("button", { name: "確認して実行する" }).click();
+  await pageCf.waitForFunction(
+    () => document.getElementById("notice").innerText.includes("purgeStale"),
+    null,
+    { timeout: 8000 },
+  );
+  cf.afterRunFailureNotice = (await noticeBad()) && purged === 1;
+  failPurge = false;
+  // ほかの入力欄で打っている最中は、新しい確認待ちが出ても、フォーカスを奪わない
+  // （この窓口の判断待ちは前の確認で回答済みのことがあるので、ページの下に入力欄を 1 つ足して確かめる）
+  await pageCf.evaluate(() => {
+    const t = document.createElement("textarea");
+    t.id = "other-input";
+    document.querySelector("main").appendChild(t);
+  });
+  const other = pageCf.locator("#other-input");
+  cf.otherTextareaExists = (await other.count()) === 1;
+  await other.click();
+  await other.type("入力中");
+  await ask("cf-purge-5");
+  await pageCf.locator("#approvals").waitFor({ timeout: 8000 });
+  await pageCf.waitForTimeout(300);
+  cf.focusNotStolen = await pageCf.evaluate(
+    () =>
+      document.activeElement?.tagName === "TEXTAREA" &&
+      document.activeElement?.dataset.approval === undefined,
+  );
+  cf.typedKept = (await other.inputValue()).includes("入力中");
+  cf.errors = cfErrors;
+  out.confirmation = cf;
+  await pageCf.context().close();
+  await csrv.close();
+}
+
+// 使い終わったページを閉じる（SSE の同時接続の上限）
+await pageT.context().close();
+await page4.context().close();
+await page2.context().close();
+await page.context().close();
+// 切れたら、指数バックオフで再接続する（1 回目を中断させる）
+let eventRequests = 0;
+const page3 = await (await browser.newContext()).newPage();
+await page3.route("**/v1/events", (route) => {
+  eventRequests += 1;
+  return eventRequests === 1 ? route.abort() : route.continue();
+});
+await page3.goto(`${url}/ui#token=${HUMAN}`);
+const t1 = Date.now();
+await page3.waitForFunction(
+  () => document.getElementById("status").innerText.includes("SSE"),
+  null,
+  { timeout: 10000 },
+);
+out.reconnectMs = Date.now() - t1;
+out.eventRequests = eventRequests;
+await browser.close();
+await poll.close();
+await server.close();
+console.log(JSON.stringify(out, null, 1));

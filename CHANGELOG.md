@@ -1,0 +1,13 @@
+# 変更履歴
+
+## 0.1.0（最初の公開）
+
+最初の公開の版です（公開より前の開発の履歴は、このリポジトリには含めていません）。
+
+- **統合セッション 1 対 作業セッション n の木**: 統合セッション（人が対話する根）から、子のセッションへの依頼・進捗・判断・完了の報告・受理と差し戻し・回収を、daemon（`touryou-daemon`）が木として記録し、受信箱で知らせる。
+- **子は親が起動する**: touryou はセッションを起動せず、Anthropic の認証も扱わない。親のセッションが受信箱のコマンド（`claude --bg …`）を実行して子を起動し、子が `child_bind` で紐付き、`inbox_fetch` で知らせを読む。停止は `claude stop`、削除は `claude rm`（`docs/plugin.md`）。
+- **Claude Code plugin**: skill `integrator`・`child`、コマンド `/touryou:setup`・`start`・`status`・`service`・`desktop`、フック、統合セッションの MCP（`touryou-mcp --stdio`。落ちない中継つき）。入れ方は `claude plugin marketplace add comcreate/touryou` → `/plugin install touryou@touryou` → `/touryou:setup`。
+- **配布物**: macOS（Apple Silicon）用の Node 同梱の tar.gz を GitHub Release に付け、`/setup` が plugin の `checksums.json` の sha256 と照合してから入れる。Claude デスクトップアプリの拡張機能（`.mcpb`）も付ける。
+- **常駐**: `touryou launchd init|apply|status|restart|stop|uninstall`。plist の Label の既定は `touryou.daemon`（`--org com.example` で `com.example.touryou.daemon`）。
+- **安全**: daemon の身元の確かめ（トークンを送る前に毎回）、作業の範囲のフック、状態の置き場の権限・ACL の確かめ。試験用の `TOURYOU_CLI_ALLOW_UNVERIFIED` は開発のビルドだけで効き、配布物では効かない。
+- 人間用コマンド `touryou`・HTML の画面・Desktop の子（実験的）。

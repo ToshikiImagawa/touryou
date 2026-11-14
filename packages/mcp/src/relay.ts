@@ -1,0 +1,406 @@
+/**
+ * daemon の窓口への中継。`POST /v1/request` と `GET /v1/whoami` を、呼び出し元のノードのトークンで呼ぶ。
+ * トークンの真偽・ロールの判定・部分木の判定は daemon が行い（ここでは検証しない）、失敗はそのまま返す。
+ * 外へ出すのはループバックの daemon だけ。トークンと本文は、失敗の原因にもログにも入れない。
+ */
+import { type Failure, failure, isSafeId, ok, type Result, sanitizeText } from "@touryou/core";
+import type { IdentityVerifier } from "./identity.js";
+
+/** 中継する本文・応答の上限（daemon の窓口と同じ 1 MiB）。 */
+export const MAX_RELAY_BYTES = 1024 * 1024;
+export const DEFAULT_TIMEOUT_MS = 30_000;
+/** 子の起動・切り出し・回収は、時間がかかる（git の作業ツリーを扱う）ので、長めにする。 */
+export const LONG_OPERATION_TIMEOUT_MS = 120_000;
+const LONG_OPERATIONS: ReadonlySet<string> = new Set(["node.spawn", "node.split", "node.reclaim"]);
+/** 操作ごとのタイムアウト。 */
+export const timeoutFor = (operation: string): number =>
+  LONG_OPERATIONS.has(operation) ? LONG_OPERATION_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+/** トークンの長さの上限。 */
+const TOKEN_MAX = 8192;
+/** daemon の失敗の文面の長さの上限（応答を受け手のコンテキストに入れすぎない）。 */
+const FAILURE_TEXT_MAX = 2000;
+const FAILURE_ACTIONS_MAX = 10;
+
+export interface Relay {
+  /** トークンのロール（接続ごとに 1 回引く）。 */
+  /** 呼び出し元のロールと、ノードのトークンなら自分の nodeId（古い daemon・人間のトークンでは、なし）。 */
+  whoami(): Promise<Result<{ role: string; nodeId?: string }>>;
+  /**
+   * 操作を daemon へ中継する。成功の値・daemon の失敗は、そのまま返す。`requestId` を渡すと、それを使う（cli の `--request-id`
+   * の再実行）。省略すると、新しく作る。再送は、どちらでも同じ requestId で行う。
+   */
+  request(
+    operation: string,
+    params: unknown,
+    options?: { readonly requestId?: string },
+  ): Promise<Result<unknown>>;
+}
+
+export interface RelayOptions {
+  /** daemon の窓口。ループバック（127.0.0.1・localhost・[::1]）の http(s) の URL に限る。 */
+  readonly daemonUrl: string;
+  readonly token: string;
+  readonly fetch?: typeof fetch;
+  /** 指定すると、全操作のタイムアウトをこの値にする（既定は操作ごと。`timeoutFor`）。 */
+  readonly timeoutMs?: number;
+  readonly maxBytes?: number;
+  /**
+   * daemon の身元の検証。渡すと、トークンつきの要求（whoami・request）を送る**直前に毎回**検証し、失敗したら
+   * トークンを送らずに失敗を返す（送っていないので、操作は実行されていない）。省略すると検証しない
+   * （`touryou-mcp` は、常に検証つきで動く。省略はテスト用）。
+   */
+  readonly verifier?: IdentityVerifier;
+  /**
+   * 検証のあとで、トークンつきの要求の応答の `x-touryou-daemon-id` が、検証で得た `daemonId` と一致しなかった（応答を捨てた）ときに呼ぶ
+   * （記録・通知用。引数なし）。検知であって、防止ではない（`docs/daemon-identity.md` §5）。
+   */
+  readonly onIdentityMismatch?: () => void;
+  /** 429・409 のあとの待ち（テストで差し替える）。既定は実時間。 */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** 待ちに足すジッター（0〜500ms）の乱数（0 以上 1 未満。テストで差し替える）。既定は `Math.random`。 */
+  readonly random?: () => number;
+  /** 締め切りの計算に使う時計（ミリ秒。テストで差し替える）。既定は `performance.now`。 */
+  readonly now?: () => number;
+}
+
+/** 429 のあとに待つ秒数の上限。 */
+export const MAX_RETRY_AFTER_SEC = 10;
+const DEFAULT_RETRY_AFTER_SEC = 1;
+
+/** `rate_limited`（daemon の 429。daemon は実行していない）。`retryAfterSec`: 待つ秒数の目安（Retry-After を丸めたもの）。 */
+export type RateLimited = Failure & { readonly retryAfterSec: number };
+
+/** `Retry-After`（整数の秒）を読む。なし・不正（日付・小数・負）は 1 秒。上限 10 秒。 */
+export function parseRetryAfter(header: string | null | undefined): number {
+  if (typeof header !== "string" || !/^[0-9]{1,6}$/.test(header.trim()))
+    return DEFAULT_RETRY_AFTER_SEC;
+  return Math.min(Number(header.trim()), MAX_RETRY_AFTER_SEC);
+}
+
+const rateLimited = (sec: number): RateLimited =>
+  Object.assign(
+    failure(
+      "rate_limited",
+      "要求が多すぎる（回数の制限。daemon は実行していない）",
+      `${sec} 秒ほど待ってから、同じ操作を呼び直す（実行されていないので、二重にならない）`,
+      "続くときは、呼び出しの頻度を下げる",
+    ),
+    { retryAfterSec: sec },
+  );
+
+/** `in_progress`（daemon の 409。同じ要求を処理中で、この要求は実行していない）。 */
+const inProgressFailure = (sec: number): RateLimited =>
+  Object.assign(
+    failure(
+      "in_progress",
+      "同じ要求を処理中（この要求は実行していない）",
+      `${sec} 秒ほど待ってから、状態を確かめて、必要なら呼び直す`,
+      "tree_list などで、先の要求の結果を確かめる",
+    ),
+    { retryAfterSec: sec },
+  );
+
+/** 応答が、検証した daemon のものでなかった。トークンは、別のプロセスに届いた可能性がある。 */
+const identityMismatch = (): Failure =>
+  failure(
+    "daemon_identity_failed",
+    "応答の送り手が、検証した daemon と違う（応答は捨てた。トークンが別のプロセスに届いた可能性があり、操作の結果は不明）",
+    "daemon を止めて起動し直し、トークンを再発行する（子を作り直す）",
+    "別のプロセスが窓口のポートを使っていないか確認する",
+    "tree_list などで状態を確かめる",
+  );
+
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const TOKEN_FORMAT = /^[\x21-\x7e]+$/;
+
+const fail = (code: string, cause: string, ...next: [string, ...string[]]): Result<never> => ({
+  ok: false,
+  error: failure(code, cause, ...next),
+});
+
+const isRec = (x: unknown): x is Record<string, unknown> =>
+  typeof x === "object" && x !== null && !Array.isArray(x);
+
+const isFailure = (x: unknown): x is Failure =>
+  isRec(x) &&
+  typeof x.code === "string" &&
+  typeof x.cause === "string" &&
+  Array.isArray(x.nextActions) &&
+  x.nextActions.length > 0 &&
+  x.nextActions.every((n) => typeof n === "string");
+
+export function createRelay(opts: RelayOptions): Result<Relay> {
+  let base: URL;
+  try {
+    base = new URL(opts.daemonUrl);
+  } catch {
+    return fail("invalid_config", "daemonUrl が URL でない", "daemonUrl を確認する");
+  }
+  if (
+    (base.protocol !== "http:" && base.protocol !== "https:") ||
+    !LOOPBACK.has(base.hostname) ||
+    base.username !== "" ||
+    base.password !== ""
+  ) {
+    return fail(
+      "invalid_config",
+      "daemonUrl は、ループバック（127.0.0.1・localhost・[::1]）の http(s) の URL に限る（ユーザー名・パスワードは含めない）",
+      "daemonUrl を確認する",
+    );
+  }
+  if (
+    typeof opts.token !== "string" ||
+    opts.token.length > TOKEN_MAX ||
+    !TOKEN_FORMAT.test(opts.token)
+  ) {
+    return fail("invalid_config", "トークンの形が不正", "接続のトークンを確認する");
+  }
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  const maxBytes = opts.maxBytes ?? MAX_RELAY_BYTES;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const random = opts.random ?? Math.random;
+  const nowMs = opts.now ?? (() => performance.now());
+  /** 429・409 のあとの待ち（Retry-After + 0〜500ms のジッター。同時に再送する呼び出しが、揃わないように）。 */
+  const waitMs = (sec: number): number => sec * 1000 + Math.floor(random() * 500);
+  const origin = base.origin;
+  const authorization = `Bearer ${opts.token}`;
+  let counter = 0;
+  const newRequestId = (): string =>
+    `mcp-${Date.now().toString(36)}-${(counter++).toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+  /**
+   * 1 回の呼び出し。`transport`: 応答を受け取れなかった（接続の失敗・タイムアウト）。操作が実行されたかは分からない。
+   * `notSent`: 身元の確認に失敗して、送らなかった（この回は実行されていない。前の回の結果は、呼び出し元が判断する）。
+   * `budgetMs`: 身元の確認で、daemon の再起動を待つ時間の上限（呼び出し元の締め切りの残り）。
+   */
+  async function call(
+    path: string,
+    init: RequestInit,
+    timeout: number,
+    budgetMs?: number,
+  ): Promise<{
+    result: Result<unknown>;
+    transport: boolean;
+    retrySec?: number;
+    notSent?: boolean;
+  }> {
+    let expectedDaemonId: string | undefined;
+    if (opts.verifier !== undefined) {
+      // トークンを送る前に、毎回、相手が本物の daemon か確かめる。失敗なら、トークンを送らない（この回は実行されていない）。
+      const v = await opts.verifier.verify(budgetMs === undefined ? undefined : { budgetMs });
+      if (!v.ok) {
+        return { result: { ok: false, error: v.failure }, transport: false, notSent: true };
+      }
+      expectedDaemonId = v.daemonId;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const done = (result: Result<unknown>) => ({ result, transport: false });
+    try {
+      // リダイレクトは辿らない（トークンと本文を別のオリジンへ送らない）。
+      const res = await doFetch(`${origin}${path}`, {
+        ...init,
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (
+        expectedDaemonId !== undefined &&
+        res.headers.get("x-touryou-daemon-id") !== expectedDaemonId
+      ) {
+        // 検証から送信までの間に、相手が入れ替わった（daemon の再起動・ポートの奪取）。応答は、捨てる（読まない）。
+        await res.body?.cancel().catch(() => undefined);
+        try {
+          opts.onIdentityMismatch?.();
+        } catch {
+          // 記録先の失敗は、処理を変えない
+        }
+        return done({ ok: false, error: identityMismatch() });
+      }
+      if (res.status === 429) {
+        // 回数の制限。daemon は実行していない。本文は読まない。
+        await res.body?.cancel().catch(() => undefined);
+        const sec = parseRetryAfter(res.headers.get("retry-after"));
+        return {
+          result: { ok: false, error: rateLimited(sec) },
+          transport: false,
+          retrySec: sec,
+        };
+      }
+      const raw = await readLimited(res, maxBytes);
+      if (raw === undefined) {
+        return done(
+          fail(
+            "daemon_response_too_large",
+            `daemon の応答が上限（${maxBytes} バイト）を超えた（操作は実行された可能性がある）`,
+            "tree_list などで状態を確かめる",
+            "対象を絞って参照する",
+          ),
+        );
+      }
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return done(
+          fail("daemon_bad_response", "daemon の応答が JSON でない", "daemon の状態を確認する"),
+        );
+      }
+      if (isRec(body) && body.ok === true && "value" in body) return done(ok(body.value));
+      if (isRec(body) && body.ok === false && isFailure(body.error)) {
+        if (res.status === 409 && body.error.code === "inProgress") {
+          // 同じ要求を処理中（daemon は、この要求を実行していない）。429 と同じ扱い。
+          const sec = parseRetryAfter(res.headers.get("retry-after"));
+          return {
+            result: { ok: false, error: inProgressFailure(sec) },
+            transport: false,
+            retrySec: sec,
+          };
+        }
+        return done({ ok: false, error: bounded(body.error) });
+      }
+      return done(
+        fail("daemon_bad_response", "daemon の応答の形が不正", "daemon の状態を確認する"),
+      );
+    } catch {
+      const timedOut = controller.signal.aborted;
+      return {
+        transport: true,
+        result: timedOut
+          ? fail(
+              "daemon_timeout",
+              `daemon の応答が ${timeout}ms 以内に返らなかった`,
+              "daemon の状態を確認する",
+            )
+          : fail(
+              "daemon_unreachable",
+              "daemon に接続できない",
+              "daemon が起動しているか確認する",
+              "daemonUrl を確認する",
+            ),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return ok({
+    async whoami() {
+      // 読み取りだけなので、429 は Retry-After（上限 10 秒）だけ待って、1 度だけ再送する。
+      const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const send = () => call("/v1/whoami", { method: "GET", headers: { authorization } }, timeout);
+      let { result: r, retrySec } = await send();
+      if (!r.ok && retrySec !== undefined) {
+        await sleep(waitMs(retrySec));
+        ({ result: r } = await send());
+      }
+      if (!r.ok) return r;
+      if (!isRec(r.value) || typeof r.value.role !== "string") {
+        return fail(
+          "daemon_bad_response",
+          "whoami の応答に role がない",
+          "daemon の状態を確認する",
+        );
+      }
+      // nodeId は、ID の形のときだけ取る（形の崩れた値は、なしとして扱う）。
+      const nodeId = isSafeId(r.value.nodeId) ? r.value.nodeId : undefined;
+      return ok({ role: r.value.role, ...(nodeId === undefined ? {} : { nodeId }) });
+    },
+    async request(operation, params, options) {
+      const requestId = options?.requestId ?? newRequestId();
+      if (!isSafeId(requestId)) {
+        return fail("invalid_request_id", "requestId が識別子の形でない", "requestId を確かめる");
+      }
+      const body = JSON.stringify({ requestId, operation, params });
+      if (Buffer.byteLength(body) > maxBytes) {
+        return fail(
+          "request_too_large",
+          `送る本文が上限（${maxBytes} バイト）を超えた`,
+          "内容を小さくして呼び直す",
+        );
+      }
+      const init = {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body,
+      };
+      const timeout = opts.timeoutMs ?? timeoutFor(operation);
+      // 同じ requestId で再送する（daemon が (主体, requestId) で重複を防ぐので、二重に実行されない）。
+      // - 応答を受け取れなかった（接続の失敗・タイムアウト）: 1 度だけ。それでも失敗なら、結果は不明。
+      // - 429・409 inProgress（回数の制限・処理中。daemon は実行していない）: Retry-After（上限 10 秒）+ ジッターだけ待って、1 度だけ。
+      // 送信は合計 3 回まで。待ちを含めた全体に、締め切り（その操作のタイムアウト + 10 秒）がある。超えたら、新しい再送は始めない。
+      // 401 の Retry-After・422 requestIdConflict では再送しない。
+      const startedAt = nowMs();
+      const deadline = timeout + 10_000;
+      let transportRetries = 0;
+      let busyRetries = 0;
+      let last: Result<unknown> | undefined;
+      let lastDefinite = false;
+      for (let sends = 0; sends < 3; sends++) {
+        // 身元の確認の待ちも、締め切りの中に含める。
+        const r = await call("/v1/request", init, timeout, deadline - (nowMs() - startedAt));
+        if (r.notSent && sends > 0) {
+          // 再送の前の確認で失敗した（この回は送っていない）。この回の失敗ではなく、前の回の結果で判断する:
+          // 前の回が応答なしなら、実行されたかは分からない（結果不明）。429・409 なら、その失敗を返す。
+          break;
+        }
+        last = r.result;
+        lastDefinite = !r.transport;
+        if (r.transport) {
+          if (transportRetries++ < 1 && nowMs() - startedAt < deadline) continue;
+          break;
+        }
+        if (r.retrySec !== undefined && busyRetries++ < 1) {
+          const wait = waitMs(r.retrySec);
+          if (nowMs() - startedAt + wait >= deadline) break;
+          await sleep(wait);
+          continue;
+        }
+        return r.result;
+      }
+      // 実行されていないと分かっている最後の結果（429・409）は、そのまま返す。応答を受け取れなかったときだけ、結果は不明。
+      if (last !== undefined && lastDefinite) return last;
+      return fail(
+        "daemon_result_unknown",
+        "daemon から応答を受け取れず、結果は不明（操作は実行されたかもしれない）",
+        "tree_list などで状態を確かめてから、必要なら操作をやり直す",
+        "daemon の状態を確認する",
+      );
+    },
+  });
+}
+
+/** daemon の失敗の文面の長さを抑える（制御文字を除き、約 2000 文字まで）。 */
+function bounded(f: Failure): Failure {
+  const [first, ...rest] = f.nextActions.slice(0, FAILURE_ACTIONS_MAX);
+  return failure(
+    sanitizeText(f.code, 128),
+    sanitizeText(f.cause, FAILURE_TEXT_MAX),
+    sanitizeText(first, FAILURE_TEXT_MAX),
+    ...rest.map((a) => sanitizeText(a, FAILURE_TEXT_MAX)),
+  );
+}
+
+/** 応答の本文を、上限を超えない範囲で読む。超えたら `undefined`。 */
+async function readLimited(res: Response, max: number): Promise<string | undefined> {
+  const reader = res.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    // 読み取りの途中の失敗でも、本文を開けたままにしない。
+    await reader.cancel().catch(() => undefined);
+    throw e;
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}

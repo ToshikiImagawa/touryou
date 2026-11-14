@@ -1,0 +1,52 @@
+name: CI (macOS)
+
+# macOS（arm64）の check。macOS の runner は ubuntu の約 10 倍の費用なので、コード・依存・この yml が変わったときだけ動かす
+# （docs/release.md の「CI の実行時間と費用」）。release.yml の dist と同じ macos-15。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+      - "scripts/**"
+      - "plugin/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "biome.json"
+      - "tsconfig*.json"
+      - ".github/workflows/ci-macos.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/**"
+      - "scripts/**"
+      - "plugin/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "biome.json"
+      - "tsconfig*.json"
+      - ".github/workflows/ci-macos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (macos-15, node 24)
+    runs-on: macos-15
+    # macOS arm64 の runner は、割り当てまで長く待つことがある（"capacity constraints"）。待ち時間を含めて 45 分
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: bash scripts/check.sh

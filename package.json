@@ -1,0 +1,29 @@
+{
+  "name": "touryou",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Composite pattern orchestrator for Claude sessions (integrator 1 : n workers)",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "biome check .",
+    "typecheck": "pnpm -r typecheck",
+    "format": "biome format --write .",
+    "validate:plugin": "node scripts/validate-plugin.mjs",
+    "check": "bash scripts/check.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.28.0",
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
+    "@biomejs/biome": "2.5.15",
+    "esbuild": "0.28.2",
+    "fast-check": "4.10.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}

@@ -1,0 +1,177 @@
+# daemon の身元確認
+
+> **注**: この文書が書く、SDK による子の起動・子の認証（`claude setup-token`・`state/oauth-token`・`childHome` など）・子用の HTTP の `touryou-mcp` の常駐（`mcpUrl`・`run-mcp.sh`）・子の MCP の中継（`--child-stdio`・`childMcp`）は、外した（決定ログ `.sdd/adr/touryou.md`）。該当の節は、設計の記録として残す。いまの手順は `README.md`・`/setup` を見る。
+
+別のプロセスが、窓口のポート（`daemonUrl`）を奪うと、mcp の中継が、子のトークン（Bearer）を、偽の daemon へ送ってしまう。
+これを防ぐために、**mcp は、トークンを送る前に、相手が本物の daemon か確かめる**。この文書は、daemon と mcp の**契約**。
+
+## 仕組み（チャレンジ応答）
+
+1. daemon は、**起動のたびに**、ランダムな秘密 `secret`（32 バイト）と、公開の `daemonId`（16 バイト）を作る。
+2. `secret` は、`<stateDir>/daemon-identity`（0600）にだけ置く。窓口は `secret` を返さず、`proof`（HMAC）だけを返す。
+3. mcp は、**トークンつきの要求（`GET /v1/whoami`・`POST /v1/request`）を送るたびに、その直前に**、ファイルから `secret` を読み、ランダムな `nonce` で
+   `GET /v1/identity` を呼び、同じ式で計算した `proof` と**定数時間で**比べる。一致したときだけ、トークンを送る（キャッシュはしない。§4）。
+4. ポートを奪っただけの相手は `secret` を知らない（ファイルは 0600 の `stateDir` の中）ので、`proof` を作れない。
+
+## 1. 秘密のファイル
+
+- 場所: `<stateDir>/daemon-identity`。`stateDir` は、daemon の設定ファイル（`--config`）の `stateDir`（絶対パス）。
+- 権限: 0600。`stateDir` は 0700。
+- 内容（JSON 1 行）:
+
+```json
+{"version":1,"daemonId":"<小文字の 16 進 32 桁>","secret":"<小文字の 16 進 64 桁>"}
+```
+
+- **作り直し**: daemon は、`start()` のたびに、新しい `daemonId`・`secret` を作り、**待ち受けを始める前に**、一時ファイルに書いてから置き換える。
+  異常終了で古いファイルが残っていても、次の起動で必ず上書きされる。待ち受けが失敗したら、自分のファイルを消す。
+- **削除**: daemon の停止（`stop()`）で、自分のファイルを消す（別の起動が上書きしたものは消さない）。
+- 読む側の注意: `version` が 1 でない・形が違うときは、**ファイルを信用しない**（身元を確認できないものとして扱う）。
+
+## 2. 窓口: `GET /v1/identity?nonce=<nonce>`
+
+- **認証なし**（Bearer は不要。送らない）。Host・Origin の検査は、ほかの入口と同じ（`127.0.0.1:<port>`・`localhost:<port>`）。
+- `nonce`: **小文字の 16 進**で、**32〜128 桁（16〜64 バイト）の偶数**。クエリは `nonce` を**ちょうど 1 つ**（余計なパラメータ・重複は 400）。
+- 成功（200）:
+
+```json
+{"ok":true,"value":{"daemonId":"<32 桁の 16 進>","proof":"<64 桁の 16 進>"}}
+```
+
+- 応答には `Cache-Control: no-store`。`secret` は含まれない。
+- 失敗: 400 `invalidRequest`（nonce が不正）、405 `methodNotAllowed`（GET 以外）、403 `invalidHost`、
+  429 `tooManyRequests`（回数の制限。`Retry-After` あり）、503 `unavailable`（起動の途中で、まだ身元がない）。
+- **回数の制限は、認証済みの要求とは別の、専用の bucket**（接続元ごと。既定は容量 600・毎秒 200）。mcp は、トークンつきの要求ごとに 1 回呼ぶので、その頻度に耐える値にしてある
+  （loopback で HMAC だけなので、費用は小さい）。認証済みの要求の bucket は、消費しない。
+- **429 が、サービス拒否（DoS）になりうる**: 同じ接続元（loopback はすべて同じ）から、`/v1/identity` を大量に呼ぶと、専用の bucket が尽き、mcp の検証が 429 になる
+  （mcp は、トークンを送らずに、通常の失敗として扱う）。認証済みの要求の側は影響を受けない。loopback の同じユーザーの別プロセスには、もともと守れない（§5）。
+
+## 3. proof の計算
+
+```
+proof = hex( HMAC-SHA256( key  = secret を 16 進として解釈したバイト列（32 バイト）,
+                          data = "touryou-daemon-identity-v1" + "\0" + daemonId + "\0" + hostPort + "\0" + nonce ) )
+```
+
+- `hostPort` は、**接続先**: `127.0.0.1:<port>`（固定の文字列 `127.0.0.1`、`:`、ポートの 10 進）。
+  - daemon は、**自分が待ち受けているポート**を使う。
+  - mcp は、**自分が接続した `daemonUrl` のポート**を使う（`daemonUrl` の host が `localhost` でも、`hostPort` は `127.0.0.1:<port>`。ポートが URL にないときは、身元の失敗）。
+  - これにより、偽の daemon（別のポート）が、本物の `/v1/identity` へ中継しても、本物が返す `proof` は本物のポートで作られているので、mcp が期待する `proof` と一致しない（中継の攻撃を防ぐ）。
+- `data` は UTF-8。`\0` は NUL（1 バイト）。`daemonId`・`hostPort`・`nonce` は、**文字列のまま**つなぐ（バイト列に戻さない）。
+- 出力は小文字の 16 進 64 桁。
+- 比較は**定数時間**（`crypto.timingSafeEqual` など。長さが違えば不一致）。
+
+**試験ベクトル**（両側の実装が、この値になること）:
+
+| 項目 | 値 |
+| --- | --- |
+| daemonId | `00112233445566778899aabbccddeeff` |
+| secret | `ff` を 32 個（`ffff…ff`、64 桁） |
+| hostPort | `127.0.0.1:43210` |
+| nonce | `0123456789abcdef0123456789abcdef` |
+| proof | `7c9476406e20aa9806b0d281980ad1643698d3c73c9acb17df37a86ee7844906` |
+| （hostPort が `127.0.0.1:43211` のときの proof） | `35d095e3aca9b58a5f20399a7de8319a6da2b732e8b73d8c388169986915327c` |
+
+## whoami の応答と、mcp の `whoami` ツール
+
+- `GET /v1/whoami`（Bearer）の応答は、`{ ok: true, value: { role, nodeId? } }`。**ノードのトークン（統合・子）には、自分の `nodeId` も返す**。人間のトークンには、nodeId がない（`{ role: "human" }`）。**nodeId は、その呼び出しの Bearer の持ち主の ID だけ**（ほかのノードの ID は、返さない。daemon が認証したトークンから決める）。認証・失効・回数の制限・失敗の応答は変わらない。HTTP の応答で、core の `OperationMap` ではない。
+- mcp の固定のメタツール `whoami`（統合・子の両方。入力はなし。core の `ROLE_OPERATIONS` には入れない）は、自分の `{ nodeId, role }` を返す。**呼ぶたびに daemon に尋ねる**（キャッシュしない。トークンつきの要求の直前の身元の検証は、いつもどおり）。失敗は 2 種類: 返したロールが接続のロールと違うときは `whoami_role_mismatch`（トークンを確認する）。daemon が nodeId を返さない（古い daemon）ときは `whoami_failed`（「daemon を更新して、起動し直す」）。ツール一覧は、子が 6 個、統合が 15 個。
+
+## 4. mcp の手順（契約）
+
+1. **いつ**: **トークンつきの要求（`whoami`・`request`）を送るたびに、その直前に**。**キャッシュはしない**（検証した結果を、次の要求に使い回さない。ポートが奪われても、**次の要求からは**、その直前の検証で止まる。
+   ただし、**検証から送信までの数ミリ秒の窓は、防げない**。下の「検証から送信までの窓」と §5 を見る。loopback で HMAC だけなので、費用は小さい）。起動時にも 1 回検証する（失敗したら、起動の警告ではなく、最初の要求の失敗として扱ってよい）。
+2. **検証**: 新しいランダムな `nonce`（16〜64 バイトの乱数を 16 進にしたもの）で `GET /v1/identity`（Bearer なし）を呼ぶ。応答が 200 で、`daemonId` がファイルの `daemonId` と一致し、
+   `proof` が、§3 の式（`hostPort` は自分が接続したポート）の結果と一致すれば成功。成功したら、そのあと**同じ接続先へ**トークンつきの要求を送る。
+3. **失敗したとき（1 度だけやり直す）**: daemon が再起動すると、`secret` が変わる。**身元の失敗（下の表）なら、ファイルを読み直して、1 度だけ**やり直す。
+   それでも身元の失敗なら、**トークンを送らず**、失敗コード `daemon_identity_failed` で失敗させる（原因に、`secret`・`proof`・トークンを出さない）。待たない。
+3a. **daemon の再起動の途中（要求の中で待つ）**: 秘密のファイルがない（ENOENT）・接続を拒否された・503 は、daemon が止まっているか、起動し直している途中とみなし、
+   **0.5・1・2・4 秒**（それぞれ 0〜250ms のジッター）待って、かけ直す。上限は **1 回の身元の確認あたり 8 秒**で、待ちの合計ではなく、確認を始めてからの**経過時間**で測る（確認そのものの時間も含む）。relay の `request` は、操作の締め切り（タイムアウト + 10 秒）の残りを渡し、短い方を使う。
+   POST を送ったが応答を受け取れず、再送の前の確認が尽きたときは、「送っていない」ではなく `daemon_result_unknown`（1 回目が実行されたかもしれない）。
+   書き換えの途中の部分的な読み取りは、一時的な失敗にしない（daemon は秘密のファイルを一時ファイル + rename で書くので、読めるのは前か後の完全な中身だけ。形が違えば身元の失敗で、読み直しは 1 度）。
+   毎回ファイルを読み直し、新しい nonce で確かめてから、トークンを送る（結果はキャッシュしない）。
+   尽きたら、トークンを送らず `daemon_unreachable`（次の操作は「daemon が動いているか確かめる。`touryou-mcp` の起動し直しは不要」）。やり直すのは、トークンつきの要求を送る**前**の失敗だけ
+   （送ったあとの失敗に、この待ちは使わない。401・403・`x-touryou-daemon-id` の不一致も、やり直さない）。標準エラーの記録: `{"event":"daemonRetry","attempt":n,"reason":"identityFileMissing|refused|unavailable","waitMs":…}`・
+   `{"event":"daemonRecovered","attempts":n}`・尽きたら `{"event":"daemonGaveUp"}`（トークン・daemonId・nonce・パスは出さない）。`touryou`（CLI）・`touryou child` も、同じ部品（`createIdentityVerifier`）で同じように動く。起動時の確認（`--strict-start`）は、この待ちを使わず、下の自前の待ちを使う。
+4. **ファイルは、毎回開き直して読む**（古い `secret` を、メモリに長く持たない。3 の読み直しもこれ）。
+5. **検証なしでは動かない（fail-closed）**: `touryou-mcp --stdio` は、`--config` がなければ `$HOME/.touryou/config.json` を読み、検証なしで動く道はない
+   （検証を飛ばす環境変数はない）。
+   `--config` があるのに、ファイルが読めない・形が違うときは、**身元の失敗として扱う**（トークンを送らない。1 の毎回の検証の中で、3 のやり直しを 1 度）。
+6. **`stateDir` が相対パスなら、拒否する**（設定ファイルの `stateDir` は絶対パス。daemon の設定の検査と同じ。相対パスだと、読むファイルが、起動した場所で変わってしまう）。起動を失敗させる。
+
+### 検証から送信までの窓（検知する）
+
+検証に成功してから、トークンつきの要求を送るまでの間（数ミリ秒）に、daemon が落ちてポートが奪われると、その 1 回分のトークンは、偽のプロセスに届きうる。これは**防げない**（検証と送信を、1 つの接続で不可分にはできない）。
+**検知する**ために、daemon は**すべての応答**に `x-touryou-daemon-id: <daemonId>` ヘッダーを付ける（身元がまだない起動の途中〔503〕を除く）。mcp は、トークンつきの要求の応答で、このヘッダーが、**検証で得た `daemonId` と一致するか**を確かめる。
+**不一致、またはヘッダーがない**ときは、その応答を**捨てて**（本文を読まない）、`daemon_identity_failed`（原因に「トークンが別のプロセスに届いた可能性」「操作の結果は不明」。次の操作に「トークンを再発行する」）で失敗させ、ログ（`identityMismatch`）に残す。再送はしない。
+
+### 失敗の分類（身元の失敗か、通常の失敗か）
+
+| 状況 | 分類 | mcp の動き |
+| --- | --- | --- |
+| 200 だが、`proof` が不一致 | **身元の失敗** | 1 度だけ、ファイルを読み直してやり直す。それでも失敗なら、トークンを送らず `daemon_identity_failed` |
+| 200 だが、`daemonId` が、ファイルの値と不一致 | **身元の失敗** | 同上 |
+| 200 だが、応答の形が不正（JSON でない・`ok` がない・`daemonId`・`proof` が 16 進でない、など） | **身元の失敗** | 同上 |
+| 404（この入口がない） | **身元の失敗**（古い daemon か、別のプロセス） | 同上 |
+| ファイルがない（ENOENT。daemon が止まっている・起動し直している途中） | 通常の失敗（再起動の途中） | 3a のとおり待ってかけ直す。尽きたら `daemon_unreachable` |
+| ファイルが読めない（ENOENT 以外）・形が違う（`--config` あり） | **身元の失敗** | 同上（読み直しは 1 度） |
+| 接続を拒否された | 通常の失敗（再起動の途中） | 3a のとおり待ってかけ直す。尽きたら `daemon_unreachable`。トークンは送らない |
+| タイムアウト | 通常の失敗 | `daemon_timeout`。トークンは送らない |
+| 429 | 通常の失敗 | `Retry-After` に従って待つ（既存の中継と同じ。上限あり）。トークンは送らない |
+| 503（起動の途中） | 通常の失敗（再起動の途中） | 3a のとおり待ってかけ直す。トークンは送らない |
+| 400・403・405 | **身元の失敗** | mcp が送る要求が不正（nonce・Host）か、別のプロセス。同上 |
+| 5xx（503 以外）・そのほかの 4xx・3xx | **身元の失敗** | 同上（リダイレクトには従わない） |
+
+「トークンを送らない」のは、**身元の失敗と、通常の失敗の両方**。トークンを送るのは、検証に成功したときだけ。
+
+### mcp の実装で決めた値
+
+- **`/v1/identity` の応答の大きさの上限: 4 KiB**（4096 バイト。本文は 150 バイトほど。超えたら身元の失敗）。秘密のファイルの大きさの上限も 4 KiB。
+- **`/v1/identity` 1 回のタイムアウト: 5 秒**（loopback で HMAC だけ。操作のタイムアウトとは別。超えたら通常の失敗 `daemon_timeout`）。
+- **429 の待ち**: `Retry-After`（整数の秒。なし・不正は 1 秒。上限 10 秒）+ 0〜500ms のジッターで、検証の中で 1 度だけやり直す。2 度目も 429 なら `rate_limited`（トークンは送らない）。
+- **身元の失敗のやり直し**: ファイルを読み直し、新しい nonce で 1 度だけ。それでも失敗なら `daemon_identity_failed`（HTTP では 502）。
+- **起動時の検証（`--strict-start`）**: 起動のときに、daemon に届くか（到達確認）と、身元を検証する。**`--config` があるときは、既定で強制**（失敗したら起動しない）。`--no-strict-start` で緩める（到達確認・身元確認とも 1 回だけ。身元が失敗しても、警告 `identityCheckFailed` だけで起動を続ける）。
+  - **到達確認**（強制のとき）: 接続できない（接続拒否・タイムアウト。daemon がまだ起動していない）は一時的な失敗として、1・2・4・8 秒待って、最大 5 回試す。尽きたら**終了コード 1**（`daemon_unreachable`）。標準エラーに `{"event":"startupRetry","phase":"reachable",…}`。
+  - **一時的な身元確認の失敗**（429・503・タイムアウト・接続不可）: 1・2・4・8 秒待って、最大 5 回試す（`{"event":"identityCheckRetry",…}`）。尽きたら**終了コード 1**。
+  - **身元の失敗**（不一致・ファイルが読めない・不正。`daemon_identity_failed`）: 1 秒・2 秒の **2 回だけ**確かめ直す（daemon の起動し直しの直後に、秘密が入れ替わる間を見込む）。それでも失敗なら**終了コード 3**。待ち受けない。**3 は、人手での確認が要る**（再起動を繰り返しても直らない）。
+  - **終了コード**: 0 起動 / 1 一時的な失敗が尽きた（再起動してよい）/ 2 引数の誤り（`--strict-start` と `--no-strict-start` の同時指定、`--config` なしの `--strict-start` を含む）/ 3 身元の失敗（再起動しない）。
+  - **最悪の待ち時間**: 到達確認は最大 約 40 秒（待ち 15 秒＋接続の試行 5 秒 × 5）、身元確認は最大 約 2 分（待ち 15 秒＋ 1 回の検証が最大 約 20 秒〔試行 5 秒・429 の待ち 最大 10 秒余り・やり直し〕× 5）。合わせて**最悪 約 2 分半**。supervisor の起動の待ち（systemd の `TimeoutStartSec`）は、これより大きく（**180 秒以上**）する。
+  - **supervisor の設定例（systemd）**: 終了コード 2 と 3 では再起動せず、1 のときだけ間隔をあけて再起動する。daemon を先に起動する。
+    ```ini
+    [Unit]
+    Description=touryou-mcp
+    After=touryou-daemon.service
+    Requires=touryou-daemon.service
+    StartLimitIntervalSec=300
+    StartLimitBurst=5
+
+    [Service]
+    ExecStart=/usr/local/bin/touryou-mcp --daemon-url http://127.0.0.1:7777 --config /etc/touryou/daemon.json
+    Restart=on-failure
+    RestartSec=5
+    RestartPreventExitStatus=2 3
+    TimeoutStartSec=180
+    ```
+    `StartLimitIntervalSec`・`StartLimitBurst` で、1 を繰り返し続けても、5 分に 5 回で止まる。`Requires=` により、daemon が止まれば touryou-mcp も止まる。
+  - **終了コード 3 が出たときの運用の手順**: ①標準エラーの `daemon_identity_failed` と `identityCheckFailed` を確かめる。②daemon が動いているか、`--config` が、その daemon の設定か（`stateDir` の `daemon-identity` が同じ daemon のものか）を確かめる。③別のプロセスが窓口のポートを使っていないか確かめる（`ss -ltnp` など）。④daemon を起動し直し、`touryou-mcp` を起動し直す（トークンは再発行される）。⑤直ったら `systemctl reset-failed touryou-mcp` のうえ、起動する。直らなければ、原因を取り除くまで起動しない。
+- 検証の失敗では、トークンを送っていないので、操作は実行されていない（`daemon_result_unknown` にはしない）。
+
+## 5. 脅威モデル（範囲）
+
+- **守れるもの**: daemon が落ちている間や、起動の前に、別のユーザー・別のプロセスが、窓口のポートを奪ったとき。`secret` を知らないので、`proof` を作れない。
+  mcp は、トークンを送らない。
+- **守れないもの（範囲外）**:
+  - **同じユーザーの別プロセス**: 0600 のファイルを読めるので、`secret` を取れる。同じユーザーで動くコードは、もともと信頼の範囲内（トークンのファイルも同じ）。
+  - **完全な中継（MITM）**: 本物の daemon が別のポートで動いていて、その前に立つ相手が、`/v1/identity` だけでなく、トークンつきの要求も、そのまま本物へ転送する場合。
+    `hostPort` を `proof` に含めるので、`/v1/identity` を本物へ中継するだけでは、`proof` が一致しない（§3）。ただし、同じ `hostPort` の接続を奪えた相手には、守れない。
+  - **子 → mcp の方向**（子が `mcpUrl` の偽物へトークンを送る）: 子の MCP クライアント（SDK）の外なので、この仕組みでは扱えない。**子の経路からポートをなくす**: 子の MCP を、子の `claude` が起動する stdio の中継 `touryou-mcp --child-stdio --config <daemon の設定>` にし、中継が daemon へ直接、この文書の手順（§4）で身元を確かめてから送る。トークンは子の環境変数 `TOURYOU_MCP_TOKEN` から読む（`root-token` は読まない。`--config` は必須）。中継を使うかは、daemon の設定で切り替えた（設定 `childMcp` の既定が `stdio`。`http` にすると、従来の `mcpUrl` に戻る）。**（注）この中継（`--child-stdio`・`TOURYOU_MCP_TOKEN`・設定 `childMcp`）と子用の HTTP の `touryou-mcp` は外した（記録として残す）。いまの CLI の子は、plugin の stdio の mcp を使い、`child_bind` で紐付ける**。**Desktop の子（`childRuntime: "desktop"`）は、この穴の対象の外**: MCP の `mcpUrl` を使わず、`touryou child` で daemon の窓口へ直接、§4 と同じ部品（`createIdentityVerifier`）で身元を確かめてから送る（`packages/cli/src/child.ts`。desktop のアダプタは、MCP の接続を子に渡さない）。
+- **残余リスク（検証から送信までの窓）**: 検証に成功してから、トークンつきの要求を送るまでの**数ミリ秒の間**に、daemon が落ちてポートが奪われると、**その 1 回分のトークンは、偽のプロセスに届きうる**。
+  `x-touryou-daemon-id` の照合で**検知はする**（応答を捨て、`daemon_identity_failed` とログ `identityMismatch`）が、**防止はしない**。**そうなったときの対応**: daemon を止めて起動し直し、**トークンを再発行する**（子を作り直す。トークンは daemon の起動ごとに失効する前提で、届いたトークンは使えなくなる）。
+  次の要求からは、毎回の検証（その直前）で止まる。
+- `secret` は、ログ・応答・エラーに出さない。
+
+## 6. daemon の実装（参考）
+
+- `packages/daemon/src/api/identity.ts`（`createIdentity`・`proofOf`・`writeIdentityFile`・`removeIdentityFile`・`parseIdentityFile`・`isValidNonce`）。
+- 窓口は `packages/daemon/src/api/server.ts` の `handleIdentity`。`createDaemon` の `start()` が、ファイルを書いてから待ち受ける。`RunningDaemon.identityPath`。
+- 試験: `packages/daemon/test/api/identity.test.ts`（試験ベクトル）・`packages/daemon/test/api/identity-server.test.ts`（中継・回数の制限）・`packages/daemon/test/compose.test.ts`（実 HTTP）。

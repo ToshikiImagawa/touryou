@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "node": {
+      "type": "stdio",
+      "command": "/bin/bash",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/touryou-mcp-shim.sh"
+      ]
+    }
+  }
+}

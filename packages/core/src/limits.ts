@@ -1,0 +1,95 @@
+/**
+ * 子が入れる文字列・配列の上限と、文字列の検査（NFR_011, DC_003）。長さはコードポイントで数える。
+ * 上限を超える・禁止された文字を含む値は、イベントの検査（`events.ts`）で `invalidPayload` として拒否する。
+ */
+
+import { INBOX_SUMMARY_MAX } from "./inbox-kinds.js";
+
+export const LIMITS = {
+  /** 報告の本文（`report.added` の `text`）。 */
+  reportText: 64 * 1024,
+  /** 判断要求の問い（`decision.requested` の `question`）。 */
+  question: 8 * 1024,
+  /** 判断要求の選択肢の件数と、1 件あたりの長さ。 */
+  optionCount: 20,
+  optionLength: 500,
+  /** 完了報告の根拠の件数と、`criterion`・`evidence` それぞれの長さ。 */
+  evidenceCount: 50,
+  evidenceLength: 4 * 1024,
+  /** `node.exited` の理由、`node.toolDenied` のツール名。 */
+  reason: 1024,
+  tool: 1024,
+  /** 受信箱の項目の要約。 */
+  summary: INBOX_SUMMARY_MAX,
+  /** ブリーフ（spec 5.2）: 目的、受け入れ基準の件数と 1 件の長さ、作業範囲の各一覧の件数と 1 件の長さ、依存先の件数。 */
+  objective: 8 * 1024,
+  criteriaCount: 50,
+  criterionLength: 1024,
+  scopeEntryCount: 100,
+  scopeEntryLength: 4096,
+  dependsOnCount: 50,
+  /** 範囲の拡張要求（FR_015）: 対象（場所またはコマンド）・理由の長さと、ノードあたりの未判定（open）の件数。 */
+  extensionTarget: 1024,
+  extensionReason: 4 * 1024,
+  openExtensionsPerNode: 10,
+  /** 未回答（open）の判断要求の、ノードあたりの件数（拡張要求の `openExtensionsPerNode` と同じ考え方）。 */
+  openDecisionsPerNode: 10,
+  /** 強制の回収で失われるコミットの件名: 1 ノードあたりの件数と、1 件の長さ。 */
+  lossSubjects: 5,
+  lossSubjectLength: 100,
+  /** 破棄の指示（`node.reclaimInstruct`）の `expectTips` の件数の上限（対象と配下のノード数の上限。プレビューの `tips` も同じ）。 */
+  expectTips: 256,
+  /** 最終削除（`node.purge`）の `expectNodeIds` の件数の上限（削除される木のノード数の上限。事前確認の `nodeIds` も同じ）。 */
+  expectNodeIds: 2000,
+  /** 子が入れる報告（`progress`・`outOfScope`）の、ノードあたりの件数。直近の start・restart より後だけを数える。完了・失敗・差し戻しの報告は数えない。 */
+  reportsPerNode: 200,
+  /** 判断要求（`decision.requested`）で、判断待ちの間に止める子の件数。 */
+  pauseNodeCount: 100,
+  /** 最終削除の標識（`node.purged`）: 木のノードの件数と、最終コミットの長さ。 */
+  purgeNodeCount: 10_000,
+  commit: 128,
+  /** 配下の要約（`digest`）に載せる、最優先の項目の件数。 */
+  digestTopItems: 3,
+  /** 自動の最終削除の保留: 理由の長さ（文字）と、保留の期限の上限（日）。 */
+  purgeHoldReason: 200,
+  purgeHoldMaxDays: 365,
+  /** 完了の判定（`node.review`）の差し戻し理由・コメント。 */
+  feedback: 8 * 1024,
+} as const;
+
+/** タブ・改行（LF）以外の制御文字（C0・DEL・C1）と、書式制御文字（Cf。U+202E、ゼロ幅文字など）。 */
+const FORBIDDEN_CHAR = /(?![\t\n])[\p{Cc}\p{Cf}]/u;
+
+/** コードポイントの数。上限の判定に使うため、極端に長い文字列は数えずに打ち切る。 */
+export function codePointLength(s: string, stopAfter: number): number {
+  if (s.length > stopAfter * 2) return stopAfter + 1;
+  let n = 0;
+  for (const _ of s) {
+    n += 1;
+    if (n > stopAfter) break;
+  }
+  return n;
+}
+
+/** 文字列で、コードポイント数が `max` 以下、かつ禁止された文字を含まないか。 */
+export const isBoundedText = (x: unknown, max: number): x is string =>
+  typeof x === "string" && codePointLength(x, max) <= max && !FORBIDDEN_CHAR.test(x);
+
+/**
+ * 外部（子・SDK の例外など）由来の値を、記録できる文字列にする。文字列でなければ `String` にし、禁止された文字を
+ * U+FFFD に置き換え、`max` コードポイントを超えたら末尾を「…」にして収める。結果は常に `isBoundedText(_, max)` を満たす。
+ */
+export function sanitizeText(x: unknown, max: number): string {
+  let s: string;
+  try {
+    s = typeof x === "string" ? x : String(x);
+  } catch {
+    s = "(文字列にできない値)";
+  }
+  const clean = Array.from(s.length > max * 4 ? s.slice(0, max * 4) : s, (ch) =>
+    FORBIDDEN_CHAR.test(ch) ? "�" : ch,
+  );
+  return clean.length <= max && s.length <= max * 4
+    ? clean.join("")
+    : `${clean.slice(0, Math.max(0, max - 1)).join("")}…`;
+}

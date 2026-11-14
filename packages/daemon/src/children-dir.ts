@@ -1,0 +1,448 @@
+/**
+ * 子の引き出しの置き場（`<stateDir>/children.noindex`）。`docs/desktop-runtime.md` の「子の引き出し」。
+ *
+ * - 置き場（0700）と、子ごとの引き出し `<置き場>/<鍵>/`（0700）は、daemon が先に作る。すでにあれば、持ち主・権限（0700）・
+ *   リンクでないことを確かめ、違っていれば直さずに失敗する（フェイルクローズ）。
+ * - 名前の `.noindex` で Spotlight の索引から外し、macOS では `/usr/bin/tmutil addexclusion` で Time Machine から外す
+ *   （失敗は警告だけ。引数はパスだけ。数秒で打ち切る）。
+ * - 鍵: ノード ID を、置き場の秘密（`<stateDir>/children.key`。0600）で HMAC-SHA256 にかけたもの（先頭 32 桁）。再起動しても
+ *   同じ鍵を計算し直せる（対応を記録に持たないので、STATE_VERSION は変えない）。秘密がないのに、鍵の形の引き出しが残っている
+ *   ときは、起動を止める（新しい秘密を黙って作ると、掃除で動いている子の引き出しまで消えるため）。新しい秘密を作った起動では、
+ *   掃除をしない。
+ * - 作るのも消すのも、リンクをたどらない（lstat で確かめ、秘密のファイルは O_NOFOLLOW で開く。消すのは、リンクならリンク
+ *   自身だけ。ディレクトリの中のリンクも、たどらずに消す）。置き場は、用意したときの dev・ino と同じかを、消す前に確かめる。
+ *   同じユーザーの攻撃（確かめたあとの差し替え）には、完全には耐えない。
+ * - 起動のたびに、引き出しが要る状態（`CHILD_DIR_NEEDED`）の子の鍵でない引き出しを消す。
+ * - 失敗の理由（例外の文）には、実パスを入れない（種類と、エラーの code だけ）。
+ */
+
+import { execFile } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
+import type { NodeState } from "@touryou/core";
+import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+
+export const CHILDREN_DIR = "children.noindex";
+/** 引き出しの中のファイルの名前（cli の `CHILD_FILES` と同じ）。 */
+export const DRAWER_FILES = ["code", "token", "url", "node", "report", "hook-token"] as const;
+export type DrawerFile = (typeof DRAWER_FILES)[number];
+export const CHILDREN_KEY_FILE = "children.key";
+/**
+ * 状態ごとに、子の引き出しが要るか（起動時の掃除で残すか）。すべての状態を書く（型で網羅する）。
+ * done は差し戻しで、stopped は再開で、同じ子が再び動くので残す。pending は、まだ紐付けていない（引き出しを使わない）。
+ */
+export const CHILD_DIR_NEEDED: Readonly<Record<NodeState, boolean>> = {
+  pending: false,
+  running: true,
+  waiting: true,
+  done: true,
+  verified: false,
+  stopping: true,
+  stopIncomplete: true,
+  stopped: true,
+  reclaimable: false,
+  archived: false,
+};
+const KEY_SHAPE = /^[0-9a-f]{32}$/;
+const TMUTIL = "/usr/bin/tmutil";
+const TMUTIL_TIMEOUT_MS = 15_000;
+
+/** 引き出しの置き場の失敗（文には実パスを入れない）。`recovery` は、人がとる次の操作。 */
+export class ChildrenDirError extends Error {
+  constructor(
+    message: string,
+    readonly recovery: readonly string[] = [],
+  ) {
+    super(message);
+  }
+}
+
+/** 例外を、実パスを含まない短い理由にする（自分の例外はその文、ほかは code だけ）。 */
+export const safeCause = (e: unknown): string =>
+  e instanceof ChildrenDirError
+    ? e.message
+    : typeof (e as NodeJS.ErrnoException)?.code === "string"
+      ? String((e as NodeJS.ErrnoException).code)
+      : "unknown";
+
+export interface ChildrenDirs {
+  /** 置き場の実のパス。 */
+  readonly root: string;
+  /** この起動で、新しい秘密を作ったか（作ったら、掃除をしない）。 */
+  readonly createdKey: boolean;
+  /** ノードの鍵（推測できない。再起動しても同じ）。 */
+  keyOf(nodeId: string): string;
+  /** 子の引き出しを作る（すでにあれば、確かめるだけ）。そのパスを返す。違っていれば例外。 */
+  create(nodeId: string): string;
+  /** 子の引き出しを消す（なければ何もしない）。リンクはたどらない。 */
+  remove(nodeId: string): void;
+  /** 子の引き出しのパス（作らない）。 */
+  pathOf(nodeId: string): string;
+  /** 子の引き出しを空にして作り直す（ノード ID の再利用で、前の中身を残さない）。そのパスを返す。 */
+  reset(nodeId: string): string;
+  /** 引き出しの中に、一時ファイル（O_EXCL・O_NOFOLLOW・0600）に書いてから rename でファイルを置く（daemon が書く `node`）。 */
+  writeFile(nodeId: string, name: DrawerFile, content: string): void;
+  /** 引き出しの中のファイルを消す（なければ何もしない。リンクはリンクだけ）。引き出しそのものは残す。 */
+  removeFiles(nodeId: string, names: readonly DrawerFile[]): void;
+  /**
+   * 要る子（`neededNodeIds`）の鍵でない引き出しを消す。1 件ずつ続け、消した数と、消せなかった数を返す。
+   * 新しい秘密を作った起動では、何もしない。
+   */
+  sweep(neededNodeIds: readonly string[]): { removed: number; failed: number };
+}
+
+const uid = (): number | undefined => process.getuid?.();
+
+/** 0700 の、自分のもので、リンクでないディレクトリか。違えば例外（直さない）。 */
+function assertPrivateDir(path: string, what: string, acl: AclCheck): { dev: number; ino: number } {
+  const st = lstatSync(path);
+  if (!st.isDirectory())
+    throw new ChildrenDirError(`${what}が実のディレクトリでない（リンクなどは不可）`);
+  const me = uid();
+  if (me !== undefined && st.uid !== me)
+    throw new ChildrenDirError(`${what}の所有者が、このプロセスのユーザーと違う`);
+  if ((st.mode & 0o077) !== 0)
+    throw new ChildrenDirError(`${what}の権限が 0700 でない（${(st.mode & 0o777).toString(8)}）`);
+  const aclWhy = acl(path);
+  if (aclWhy !== undefined) throw new ChildrenDirError(`${what}に、${aclWhy}`);
+  return { dev: st.dev, ino: st.ino };
+}
+
+/** なければ 0700 で作り、確かめる。 */
+function ensurePrivateDir(path: string, what: string, acl: AclCheck): { dev: number; ino: number } {
+  try {
+    lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    mkdirSync(path, { mode: 0o700 });
+  }
+  return assertPrivateDir(path, what, acl);
+}
+
+/** 秘密のファイルを読む（O_NOFOLLOW で開き、fstat で持ち主・権限・通常のファイルを確かめる）。 */
+function readSecret(path: string, acl: AclCheck): Buffer {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    const me = uid();
+    if (!st.isFile()) throw new ChildrenDirError("引き出しの鍵のファイルが、通常のファイルでない");
+    if (me !== undefined && st.uid !== me)
+      throw new ChildrenDirError("引き出しの鍵のファイルの所有者が、このプロセスのユーザーと違う");
+    if ((st.mode & 0o077) !== 0)
+      throw new ChildrenDirError("引き出しの鍵のファイルの権限が 0600 でない");
+    const aclWhy = acl(path, fd);
+    if (aclWhy !== undefined) throw new ChildrenDirError(`引き出しの鍵のファイルに、${aclWhy}`);
+    const text = readFileSync(fd, "utf8").trim();
+    if (!/^[0-9a-f]{64}$/.test(text))
+      throw new ChildrenDirError(
+        "引き出しの鍵のファイルの中身が壊れている（空・形が違う）",
+        RECOVERY,
+      );
+    return Buffer.from(text, "hex");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const RECOVERY = [
+  "鍵のファイル（stateDir の children.key）を、前の中身に戻せるなら戻して起動し直す",
+  "戻せず、動いている子がいないなら、置き場（stateDir の children.noindex）の中を空にしてから起動し直す",
+];
+
+/**
+ * 秘密を作る: 一時ファイル（O_EXCL・O_NOFOLLOW・0600）に書いてから、link で置く（すでにあれば置かない。同時に起動した
+ * 2 つの daemon は、先に置いたほうの秘密を使う）。
+ */
+function createSecret(path: string): void {
+  const tmp = `${path}.tmp-${randomBytes(6).toString("hex")}`;
+  const fd = openSync(
+    tmp,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeSync(fd, `${randomBytes(32).toString("hex")}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    linkSync(tmp, path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  } finally {
+    unlinkSync(tmp);
+  }
+}
+
+/** 中身に u+rwx を付ける（リンクはたどらない）。消せなかったときの、もう一度の試みの前に使う。 */
+function grantOwner(path: string): void {
+  const st = lstatSync(path);
+  if (st.isSymbolicLink()) return;
+  chmodSync(path, (st.mode & 0o7777) | 0o700);
+  if (st.isDirectory()) for (const n of readdirSync(path)) grantOwner(join(path, n));
+}
+
+/** リンクをたどらずに消す（リンク・ファイルは unlink、ディレクトリは中身ごと。rm は中のリンクをたどらない）。 */
+function removeNoFollow(path: string): void {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw e;
+  }
+  if (st.isDirectory()) rmSync(path, { recursive: true, force: true });
+  else unlinkSync(path);
+}
+
+/**
+ * 起動時に呼ぶ。置き場と秘密を用意する（違っていれば `ChildrenDirError`。起動を止める）。`exclude` は Time Machine から外す
+ * 処理（既定は macOS の `/usr/bin/tmutil addexclusion <パス>`。ほかの OS では何もしない）で、失敗は `onWarning` に渡すだけ。
+ */
+export function prepareChildrenDirs(
+  stateDir: string,
+  options: {
+    readonly exclude?: (path: string) => Promise<void>;
+    readonly onWarning?: (cause: string) => void;
+    /** ACL の確かめ（既定は `defaultAclCheck`。試験で差し替える）。 */
+    readonly acl?: AclCheck;
+  } = {},
+): ChildrenDirs {
+  const acl = options.acl ?? defaultAclCheck;
+  const root = join(stateDir, CHILDREN_DIR);
+  const id = ensurePrivateDir(root, "子の引き出しの置き場", acl);
+  const keyPath = join(stateDir, CHILDREN_KEY_FILE);
+  let createdKey = false;
+  let secret: Buffer;
+  try {
+    secret = readSecret(keyPath, acl);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    // 秘密がないのに、鍵の形の引き出しが残っている: 黙って新しい秘密を作らない（掃除で消してしまうため）
+    if (readdirSync(root).some((n) => KEY_SHAPE.test(n)))
+      throw new ChildrenDirError(
+        "引き出しの鍵のファイルがないのに、子の引き出しが残っている（鍵を作り直すと、動いている子の引き出しを消してしまう）",
+        RECOVERY,
+      );
+    createSecret(keyPath);
+    createdKey = true;
+    secret = readSecret(keyPath, acl);
+  }
+  const exclude = options.exclude ?? defaultExclude;
+  exclude(root).catch((e) => options.onWarning?.(`Time Machine から外せない（${safeCause(e)}）`));
+  const keyOf = (nodeId: string): string =>
+    createHmac("sha256", secret).update(nodeId, "utf8").digest("hex").slice(0, 32);
+  /** 置き場が、用意したときと同じ実のディレクトリか（差し替えられていないか）。 */
+  const assertSameRoot = (): void => {
+    const now = assertPrivateDir(root, "子の引き出しの置き場", acl);
+    if (now.dev !== id.dev || now.ino !== id.ino)
+      throw new ChildrenDirError("子の引き出しの置き場が、起動のあとで差し替えられた");
+  };
+  return {
+    root,
+    createdKey,
+    keyOf,
+    create(nodeId) {
+      assertSameRoot();
+      const dir = join(root, keyOf(nodeId));
+      ensurePrivateDir(dir, "子の引き出し", acl);
+      return dir;
+    },
+    remove(nodeId) {
+      assertSameRoot();
+      removeNoFollow(join(root, keyOf(nodeId)));
+    },
+    pathOf: (nodeId) => join(root, keyOf(nodeId)),
+    reset(nodeId) {
+      assertSameRoot();
+      const dir = join(root, keyOf(nodeId));
+      removeNoFollow(dir);
+      ensurePrivateDir(dir, "子の引き出し", acl);
+      return dir;
+    },
+    writeFile(nodeId, name, content) {
+      assertSameRoot();
+      const dir = join(root, keyOf(nodeId));
+      assertPrivateDir(dir, "子の引き出し", acl);
+      const tmp = join(dir, `${name}.tmp-${randomBytes(8).toString("hex")}`);
+      const fd = openSync(
+        tmp,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        try {
+          writeSync(fd, `${content}\n`);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        renameSync(tmp, join(dir, name));
+        // rename を確かに残す（ディレクトリの fsync）
+        const dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+        try {
+          fsyncSync(dfd);
+        } finally {
+          closeSync(dfd);
+        }
+      } catch (e) {
+        try {
+          unlinkSync(tmp);
+        } catch {
+          // 元の失敗を返す
+        }
+        throw e;
+      }
+    },
+    removeFiles(nodeId, names) {
+      assertSameRoot();
+      const dir = join(root, keyOf(nodeId));
+      let present: string[];
+      try {
+        present = readdirSync(dir);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw e;
+      }
+      // その名前と、その一時ファイル（`<名前>.tmp-…`。touryou が書きかけて残したもの）
+      const targets = present.filter((x) =>
+        names.some((n) => x === n || x.startsWith(`${n}.tmp-`)),
+      );
+      for (const n of targets) {
+        const path = join(dir, n);
+        try {
+          if (lstatSync(path).isDirectory()) rmSync(path, { recursive: true, force: true });
+          else unlinkSync(path);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        }
+      }
+    },
+    sweep(neededNodeIds) {
+      if (createdKey) return { removed: 0, failed: 0 };
+      assertSameRoot();
+      const keep = new Set(neededNodeIds.map(keyOf));
+      let removed = 0;
+      let failed = 0;
+      for (const name of readdirSync(root)) {
+        if (KEY_SHAPE.test(name) && keep.has(name)) continue;
+        const path = join(root, name);
+        try {
+          removeNoFollow(path);
+          removed += 1;
+        } catch {
+          try {
+            grantOwner(path);
+            removeNoFollow(path);
+            removed += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+      }
+      return { removed, failed };
+    },
+  };
+}
+
+/** 外部コマンドを動かす口（試験で差し替える）。終了コードが 0 以外・時間切れ・起動の失敗は、`execFile` と同じ形の例外。 */
+export type RunCommand = (
+  file: string,
+  args: readonly string[],
+  timeoutMs: number,
+) => Promise<{ stdout: string; stderr: string }>;
+
+const runExecFile: RunCommand = (file, args, timeoutMs) =>
+  new Promise((resolve, reject) => {
+    execFile(file, [...args], { timeout: timeoutMs, encoding: "utf8" }, (e, stdout, stderr) => {
+      if (e) reject(Object.assign(e, { stdout, stderr }));
+      else resolve({ stdout, stderr });
+    });
+  });
+
+/**
+ * `tmutil` の失敗の理由の種類（実パス・出力そのものは入れない）。`execFile` は、終了コードが 0 以外のとき `code` に**数**を入れる
+ * （文字列の code だけを見ると unknown になる）。時間切れは `killed`。権限（フルディスクアクセスなど）は、出力の決まった語で見分ける。
+ */
+export function tmutilFailureKind(e: unknown): string {
+  const x = e as {
+    code?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+    stdout?: unknown;
+  };
+  if (x?.killed === true || (x?.signal !== undefined && x?.signal !== null)) return "timeout";
+  if (typeof x?.code === "string") return x.code; // ENOENT・EACCES など（起動できない）
+  if (typeof x?.code === "number") {
+    const out = `${typeof x.stderr === "string" ? x.stderr : ""}\n${typeof x.stdout === "string" ? x.stdout : ""}`;
+    const permission = /not permitted|permission|full disk access|privilege/i.test(out);
+    return permission ? `permission, exit ${x.code}` : `exit ${x.code}`;
+  }
+  return "unknown";
+}
+
+/**
+ * Time Machine から外す（macOS だけ。ほかの OS では何もしない）。先に `tmutil isexcluded` で確かめ、すでに外されていれば何もしない
+ * （前に人が外した置き場で、警告を出さない）。外せなければ、理由の種類だけを持つ例外（`ChildrenDirError`）。
+ */
+export function createTmutilExclude(
+  run: RunCommand = runExecFile,
+  platform: NodeJS.Platform = process.platform,
+): (path: string) => Promise<void> {
+  return async (path) => {
+    if (platform !== "darwin") return;
+    try {
+      const checked = await run(TMUTIL, ["isexcluded", path], TMUTIL_TIMEOUT_MS);
+      if (/\[Excluded\]/.test(checked.stdout)) return;
+    } catch {
+      // 確かめられなければ、外す処理に進む（外す処理の失敗で、理由を出す）
+    }
+    try {
+      await run(TMUTIL, ["addexclusion", path], TMUTIL_TIMEOUT_MS);
+    } catch (e) {
+      throw new ChildrenDirError(`tmutil addexclusion: ${tmutilFailureKind(e)}`);
+    }
+  };
+}
+
+const defaultExclude = createTmutilExclude();
+
+/**
+ * 状態の移り変わりで、子の引き出しにすること（Desktop の子）。`prev` は前に見た状態（初めて見るノードは undefined）。
+ * - 新しく記録されたノード（spawn）: 空にして作り直し、`node` を書く（`create`。ノード ID の再利用で、前の中身を残さない）。
+ *   起動時に初めて見るノードは、作り直さない（動いている子の引き出しを消さない。掃除は、起動のたびの要らない引き出しの片付けが行う）。
+ * - stopped になった: `token`・`url`・`code`・`report` を消す（`clearSecrets`。引き出しは残す。再開で結び直す）。起動時に
+ *   初めて見たノードが stopped のときも消す（前回、消す前に daemon が止まった分。冪等）。
+ * - verified・reclaimable・archived になった: 引き出しを消す（`remove`）。
+ * - done・そのほか: 何もしない（差し戻しで動き直す）。
+ */
+export function drawerActionFor(
+  prev: string | undefined,
+  next: string,
+  boot: boolean,
+): "create" | "clearSecrets" | "remove" | undefined {
+  if (prev === next) return undefined;
+  if (prev === undefined && boot) return next === "stopped" ? "clearSecrets" : undefined;
+  if (next === "verified" || next === "reclaimable" || next === "archived") return "remove";
+  if (next === "stopped") return "clearSecrets";
+  if (prev === undefined) return "create";
+  return undefined;
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="512" height="512">
+  <title>統合 1・作業 3 の木（仮の版。名前が決まったら見直す）</title>
+  <rect width="120" height="120" rx="24" fill="#1f5a47"/>
+  <g stroke="#e8f3ee" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M60 34 V58 M60 58 L34 84 M60 58 V86 M60 58 L86 84"/>
+  </g>
+  <g fill="#e8f3ee">
+    <circle cx="60" cy="30" r="11"/>
+    <circle cx="32" cy="88" r="8"/>
+    <circle cx="60" cy="90" r="8"/>
+    <circle cx="88" cy="88" r="8"/>
+  </g>
+</svg>

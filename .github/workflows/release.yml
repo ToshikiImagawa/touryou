@@ -1,0 +1,276 @@
+name: Release
+
+# タグ（v<plugin.json の version>）を push したら、plugin/ の zip を Release に付け、sha256 を出す。
+# marketplace は、このリポジトリの .claude-plugin/marketplace.json への PR（GITHUB_TOKEN。marketplace-self）だけ（docs/release.md）。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: タグと版（plugin.json・ルートと packages/* の package.json）を照らす
+        id: version
+        run: |
+          version="$(jq -r .version plugin/.claude-plugin/plugin.json)"
+          # 版は semver（pre-release を含む）の形だけ。以降の手順で、シェルに安全に渡せる文字だけにする
+          if ! printf '%s' "${version}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::plugin.json の version の形が正しくありません"
+            exit 1
+          fi
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::タグ ${GITHUB_REF_NAME} と plugin.json の version ${version} が違います"
+            exit 1
+          fi
+          for f in package.json packages/*/package.json; do
+            v="$(jq -r .version "$f")"
+            if [ "$v" != "${version}" ]; then
+              echo "::error::${f} の version ${v} が ${version} と違います"
+              exit 1
+            fi
+          done
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  # macOS（arm64 のみ）の配布物（Node 同梱の tar.gz）。x64（Intel）は対象外（docs/release.md の「対象の OS・CPU」）。展開して daemon が起動できること（smoke）を確かめてから、artifact に置く
+  dist:
+    needs: version
+    name: dist (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # macOS arm64 の runner の割り当ての待ち（"capacity constraints"）を含めて 60 分
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.20.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: tar.gz を作る
+        env:
+          DIST_VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/dist-build.sh "${RUNNER_TEMP}/dist"
+      - name: デスクトップアプリの拡張機能（.mcpb）を作る（JS だけ・未署名）
+        env:
+          DIST_VERSION: ${{ needs.version.outputs.version }}
+        run: bash scripts/mcpb-build.sh "${RUNNER_TEMP}/dist"
+      - name: 展開して daemon を起動する（smoke）
+        run: bash scripts/dist-smoke.sh "$(ls "${RUNNER_TEMP}"/dist/touryou-*.tar.gz)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: touryou-dist-${{ matrix.os }}
+          path: ${{ runner.temp }}/dist/*
+          # release のジョブが受け取ったら、cleanup のジョブが消す。消し損ねても 1 日で消える
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    needs: [version, dist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      download_url: ${{ steps.upload.outputs.download_url }}
+      release_url: ${{ steps.upload.outputs.release_url }}
+      sha256: ${{ steps.zip.outputs.sha256 }}
+      version: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 配布物（macOS の tar.gz）を集める
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: touryou-dist-macos-*
+          path: dist
+          merge-multiple: true
+
+      - name: 配布物を検査する（本体を、.sha256 と照合する。4 ファイル〔arm64 の tar.gz・.mcpb と、それぞれの .sha256〕だけであること）
+        run: |
+          cd dist
+          [ "$(ls | wc -l)" -eq 4 ] || { echo "::error::配布物が 4 ファイル（arm64 の tar.gz・.mcpb と、それぞれの .sha256）ではありません: $(ls)"; exit 1; }
+          sha256sum -c ./*.sha256
+
+      - name: 配布物の sha256 を plugin/checksums.json に書く（リポジトリには入れない。zip にだけ入る）
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: node scripts/make-checksums.mjs dist "${VERSION}" plugin/checksums.json
+
+      - name: plugin/ を zip にし、中身を許可リストと比べる
+        id: zip
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          name="touryou-${VERSION}.zip"
+          # 改行を含む名前は、行ごとの許可リストの判定をすり抜けうるので、そもそも入れない
+          if [ -n "$(find plugin -name $'*\n*' -print -quit)" ]; then
+            echo "::error::plugin/ に改行を含む名前のファイルがあります"
+            exit 1
+          fi
+          (cd plugin && zip -r -X "../${name}" . -x '*.gitkeep')
+          # 許可するのは、plugin の決まった置き場のファイルだけ（.env・node_modules などを入れない）
+          bad="$(unzip -Z1 "${name}" | grep -v '/$' | grep -Ev '^(\.claude-plugin/plugin\.json|\.mcp\.json|checksums\.json|hooks/hooks\.json|skills/[a-z0-9-]+/SKILL\.md|commands/[a-z0-9-]+\.md|agents/[a-z0-9-]+\.md|bin/touryou-mcp-shim\.sh)$' || true)"
+          if [ -n "${bad}" ]; then
+            echo "::error::zip に許可していないファイルがあります: ${bad}"
+            exit 1
+          fi
+          unzip -l "${name}"
+          sha256="$(sha256sum "${name}" | cut -d' ' -f1)"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          echo "${sha256}  ${name}" > "${name}.sha256"
+          {
+            echo "### plugin の zip"
+            echo
+            echo "- ファイル: \`${name}\`"
+            echo "- sha256: \`${sha256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release を作り、配布物と zip を付ける（Release がすでにあれば、失敗する）
+        id: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          ZIP_NAME: ${{ steps.zip.outputs.name }}
+          ZIP_SHA256: ${{ steps.zip.outputs.sha256 }}
+        run: |
+          # 付け直し（--clobber）はしない。tar.gz は、ビルドし直すと sha256 が変わりうる。
+          # Release の asset だけが新しくなると、marketplace.json の sha256（zip の中の checksums.json を含む）と食い違い、install が失敗する。
+          # やり直すときは、Release とタグを消してから（docs/release.md）。
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            echo "::error::Release ${GITHUB_REF_NAME} はすでにあります。付け直しはしません（docs/release.md の「やり直す」）"
+            exit 1
+          fi
+          prerelease=""
+          case "${VERSION}" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "${GITHUB_REF_NAME}" "${ZIP_NAME}" "${ZIP_NAME}.sha256" dist/touryou-*.tar.gz dist/touryou-*.tar.gz.sha256 dist/touryou-mcp-*.mcpb dist/touryou-mcp-*.mcpb.sha256 \
+            --title "${GITHUB_REF_NAME}" --notes "sha256: ${ZIP_SHA256}" ${prerelease}
+
+          # 付いた asset を取り直して、sha256 を照合する（checksums.json と、marketplace に渡す zip）
+          mkdir verify
+          gh release download "${GITHUB_REF_NAME}" --dir verify
+          [ "$(ls verify | wc -l)" -eq 6 ] || { echo "::error::Release の asset が 6 ファイル（zip・tar.gz・.mcpb と、それぞれの .sha256）ではありません: $(ls verify)"; exit 1; }
+          echo "${ZIP_SHA256}  verify/${ZIP_NAME}" | sha256sum -c -
+          # 今は arm64 だけ。対象を足すとき（docs/release.md の「対象の OS・CPU」）に、ここへ足す
+          for target in darwin-arm64; do
+            n="$(jq -r --arg t "${target}" '.assets[$t].name' plugin/checksums.json)"
+            h="$(jq -r --arg t "${target}" '.assets[$t].sha256' plugin/checksums.json)"
+            echo "${h}  verify/${n}" | sha256sum -c -
+          done
+          # デスクトップアプリの拡張機能（.mcpb）
+          n="$(jq -r '.extensions.mcpb.name' plugin/checksums.json)"
+          h="$(jq -r '.extensions.mcpb.sha256' plugin/checksums.json)"
+          echo "${h}  verify/${n}" | sha256sum -c -
+          # zip の中の checksums.json も、同じ内容であること
+          unzip -p "verify/${ZIP_NAME}" checksums.json | cmp - plugin/checksums.json
+
+          info="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")"
+          # public のリポジトリなので、認証なしで取れる browser_download_url を marketplace に渡す（headersHelper は使わない）
+          download_url="$(jq -r --arg n "${ZIP_NAME}" '.assets[] | select(.name == $n) | .browser_download_url' <<< "${info}")"
+          [ -n "${download_url}" ] && [ "$(wc -l <<< "${download_url}")" -eq 1 ] || { echo "::error::asset の URL が 1 件に決まりません"; exit 1; }
+          release_url="$(jq -r .html_url <<< "${info}")"
+          echo "download_url=${download_url}" >> "$GITHUB_OUTPUT"
+          echo "release_url=${release_url}" >> "$GITHUB_OUTPUT"
+          echo "- zip の URL（認証なしで取れる）: ${download_url}" >> "$GITHUB_STEP_SUMMARY"
+
+  # このリポジトリの .claude-plugin/marketplace.json（利用者が marketplace として追加する）に、新しい版の項目を書く PR を出す。
+  # GITHUB_TOKEN で出した PR では、CI（pull_request）が動かない（GitHub の仕様）。中身は jq で書いた 3 つの値だけなので、手で確かめてマージする。
+  marketplace-self:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: 同じリポジトリの marketplace.json を書き換えて PR を出す
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOWNLOAD_URL: ${{ needs.release.outputs.download_url }}
+          RELEASE_URL: ${{ needs.release.outputs.release_url }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          # 項目の name・description は、plugin.json から取る（名前を書く所を増やさない）
+          gh auth setup-git
+          file=.claude-plugin/marketplace.json
+          name="$(jq -r .name plugin/.claude-plugin/plugin.json)"
+          desc="$(jq -r .description plugin/.claude-plugin/plugin.json)"
+          current="$(jq -r --arg n "${name}" '.plugins[] | select(.name == $n) | .version' "${file}")"
+          if [ "${current}" = "${VERSION}" ]; then
+            echo "marketplace.json の version はすでに ${VERSION} です" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch="release/marketplace-${VERSION}"
+          title="[update] ${name} ${VERSION} を marketplace.json に反映"
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null; then
+            echo "${branch} のブランチがすでにあります（手で確認する）" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git switch -c "${branch}"
+          # 項目がなければ足し、あれば source・version だけを書き換える（ほかの項目は保つ）
+          jq --arg n "${name}" --arg d "${desc}" --arg url "${DOWNLOAD_URL}" --arg sha "${SHA256}" --arg ver "${VERSION}" '
+            ({name: $n, description: $d, version: $ver, source: {source: "archive", url: $url, sha256: $sha}}) as $new
+            | if any(.plugins[]; .name == $n)
+              then .plugins |= map(if .name == $n then .version = $ver | .source = $new.source | del(.headersHelper, .strict) else . end)
+              else .plugins += [$new] end' "${file}" > "${file}.new"
+          mv "${file}.new" "${file}"
+          if [ "$(jq -r --arg n "${name}" '.plugins[] | select(.name == $n) | .version' "${file}")" != "${VERSION}" ]; then
+            echo "::error::marketplace.json の version を ${VERSION} にできませんでした"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "${title}"
+          git push -u origin "${branch}"
+          gh pr create --repo "${GITHUB_REPOSITORY}" --head "${branch}" --base main --title "${title}" \
+            --body "Release: ${RELEASE_URL}（sha256: ${SHA256}）。release.yml から出した PR です（GITHUB_TOKEN の PR なので、CI は動きません）。"
+
+  # この run の artifact（dist の配布物。約 150MB）を消す。Actions の artifact の容量を使い切らないため（docs/release.md）。
+  # release が成功したときだけ消す（失敗・skipped・cancelled のときは、1 日の保存期限まで残し、release だけを再実行できるようにする）。
+  # 消すのは、この run の artifact だけ。権限は actions: write だけ（contents は持たない）。
+  cleanup:
+    needs: [dist, release]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: この run の artifact を消す
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" --paginate --jq '.artifacts[].id')"
+          for id in ${ids}; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}"
+            echo "消した: artifact ${id}"
+          done

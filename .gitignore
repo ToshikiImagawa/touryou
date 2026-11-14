@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+# sdd-workflow のキャッシュ
+.sdd/.cache/
+# direnv
+/.envrc
+
+# release.yml が、zip にだけ入れる生成物（リポジトリには入れない）
+plugin/checksums.json
+*.tsbuildinfo
