@@ -4,7 +4,8 @@
 set -euo pipefail
 tgz="${1:?tar.gz の絶対パス}"
 work="$(cd "$(mktemp -d)" && pwd -P)"   # macOS の /var は /private/var へのリンク。設定は実パスで書く
-trap 'kill "${pid:-0}" 2>/dev/null || true; rm -rf "$work"' EXIT
+# pid が空のとき kill 0 にしない（kill 0 は、自分のプロセスのグループ全体（runner の段のシェルも）に SIGTERM を送り、143 で落ちる）
+trap 'if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
 tar -C "$work" -xzf "$tgz"
 dir="$(ls -d "$work"/touryou-*)"
 # repo と設定（stateDir は 0700、設定は 0600）
@@ -33,19 +34,8 @@ echo "== touryou・touryou-mcp の起動口（同梱の node だけで）"
 env -i PATH=/usr/bin:/bin HOME="$work" "$dir/bin/touryou" --help | head -1
 env -i PATH=/usr/bin:/bin HOME="$work" "$dir/bin/touryou-mcp" --help >/dev/null 2>"$work/mcp-help.err" || true
 if grep -q 'ERR_MODULE_NOT_FOUND' "$work/mcp-help.err"; then echo "touryou-mcp: 依存が解決できない"; cat "$work/mcp-help.err"; exit 1; fi
-echo "== touryou hook（Node なし）: 環境変数がなければ素通し（終了コード 0）、daemon に届かなければ拒否（終了コード 2）"
-hook_in='{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Write","tool_input":{}}'
-set +e
-echo "$hook_in" | env -i PATH=/usr/bin:/bin HOME="$work" "$dir/bin/touryou" hook 2>"$work/hook0.err"; c0=$?
-echo "$hook_in" | env -i PATH=/usr/bin:/bin HOME="$work" TOURYOU_DAEMON_URL=http://127.0.0.1:1 TOURYOU_NODE_TOKEN=smoke-token "$dir/bin/touryou" hook 2>"$work/hook2.err"; c2=$?
-set -e
-[ "$c0" = 0 ] || { echo "環境変数がないのに、終了コードが 0 でない: $c0"; cat "$work/hook0.err"; exit 1; }
-[ "$c2" = 2 ] || { echo "daemon に届かないのに、終了コードが 2 でない: $c2"; cat "$work/hook2.err"; exit 1; }
-# 終了コードだけでなく、理由も確かめる（予期しない例外で 2 になった場合と、区別する）
-grep -q '働いていない' "$work/hook0.err" || { echo "環境変数なしの理由の文がない"; cat "$work/hook0.err"; exit 1; }
-grep -q '届かない' "$work/hook2.err" || { echo "届かない由来の拒否でない（予期しない失敗の疑い）"; cat "$work/hook2.err"; exit 1; }
-if grep -q 'smoke-token' "$work/hook2.err"; then echo "トークンの値が標準エラーに出ている"; exit 1; fi
-echo "touryou hook OK"
+echo "== touryou hook（Node なし）: 環境変数がなければ何も出さずに 0、daemon に届かなければ拒否（終了コード 2）"
+bash "$(dirname "$0")/dist-smoke-hook.sh" "$dir/bin/touryou"
 echo "== daemon を起動する"
 env -i PATH=/usr/bin:/bin HOME="$work" "$dir/bin/touryou-daemon" --config "$work/config.json" >"$work/out.log" 2>"$work/err.log" &
 pid=$!
