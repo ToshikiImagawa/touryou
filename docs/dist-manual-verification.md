@@ -157,7 +157,7 @@ empty="$(mktemp -d)"
 echo "$in" | env -i PATH=/usr/bin:/bin HOME="$empty" TOURYOU_DAEMON_URL=http://127.0.0.1:1 TOURYOU_NODE_TOKEN=x sh -c "$cmd"; echo "exit=$?"
 ```
 
-期待: (a) 1 つ目は `exit=0`（標準エラーに「フックは働いていない」）、2 つ目は `exit=2`（「届かない」）。(b) は `exit=2`（「touryou が見つからない」）。Stop・PostToolUse の command（`.hooks.Stop[0]…`）は、(b) でも `exit=0`（Stop が詰まらない）。CI の確認: `touryou hook` の本体は **CI で確認できる**（`dist-smoke`）。`hooks.json` の command は、`scripts/hooks-command.test.mjs` が `sh -c` で確かめる。arm64 の Mac での実行は **実機だけ**（次の項目）。
+期待: (a) 1 つ目は `exit=0`（何も出さない。「フックは働いていない」は、(a) でなく `touryou` が未配置のときにシェルの 1 行が出す）、2 つ目は `exit=2`（「届かない」）。(b) は `exit=2`（「touryou が見つからない」）。Stop・PostToolUse の command（`.hooks.Stop[0]…`）は、(b) でも `exit=0`（Stop が詰まらない）。CI の確認: `touryou hook` の本体は **CI で確認できる**（`dist-smoke` と、Linux の `scripts/dist-smoke-hook.test.mjs`。どちらも `scripts/dist-smoke-hook.sh` を使う）。`hooks.json` の command は、`scripts/hooks-command.test.mjs` が `sh -c` で確かめる。arm64 の Mac での実行は **実機だけ**（次の項目）。
 
 **実機で確かめる項目**:
 
