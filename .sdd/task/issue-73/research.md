@@ -120,3 +120,10 @@ launchctl print "gui/${UID}/touryou.test73"
 - A で、チームの一致が要るか（要るなら署名なしでは効かない）。
 - B で、ad-hoc 署名の実行ファイルが .app の名前で出るか、「識別できない」になるか。
 - 項目が外したあとすぐ消えるか（古い項目が残る報告あり）。
+
+## 7. 実機の試しの結果（11-16。Apple Silicon・署名なし）
+
+- **A**（`AssociatedBundleIdentifiers` ＋ ad-hoc の入れ物）：「Node.js Foundation」が 2 項目になった → 効かなかった。node の署名のチームと入れ物（チームなし）が一致しないためと見る（確かでない）。
+- **B**（node を入れ物の `Contents/MacOS/` に写して ad-hoc 署名）：名前は「TouRyouTest73B」で出た。ただし「開発元を識別できない項目です」と出て、アイコンは汎用の exec の絵。名前は、起こしたファイルの名前の見込みが高い。
+- 後片付けのあと、試しの項目はすぐ一覧から消えた。いまの daemon は試しの前後で変わらなかった。
+- よって、署名なしでは名前とアイコンを開発元つきで出せない見込み。署名の案は [signing-plan.md](signing-plan.md)。
