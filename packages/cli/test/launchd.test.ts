@@ -471,3 +471,13 @@ describe("launchctl を実行しない", () => {
     expect(src).not.toMatch(/child_process|spawn|exec(Sync|File)?\(/);
   });
 });
+
+describe("maskValues", () => {
+  it("絶対パス・~ の形・→ の後のパスを伏せ、サロゲートペアの途中で切らない", async () => {
+    const { maskValues } = await import("../src/launchd.js");
+    expect(maskValues("repoRoot /Users/x/a が ~/b と →/c")).toBe(
+      "repoRoot <パス> が <パス> と →<パス>",
+    );
+    expect(maskValues("😀😀😀", 2)).toBe("😀😀…");
+  });
+});

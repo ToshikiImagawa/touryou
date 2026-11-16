@@ -41,9 +41,11 @@ export function maskValues(text: string, max = 200): string {
   const t = text
     // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を取り除く
     .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/(^|[\s(（「"'=:])\/[^\s)）」"',、。]*/g, "$1<パス>")
+    .replace(/(^|[\s(（「"'=:→])~?\/[^\s)）」"',、。]*/g, "$1<パス>")
     .trim();
-  return t.length > max ? `${t.slice(0, max)}…` : t;
+  // サロゲートペアの途中で切らない
+  const chars = Array.from(t);
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : t;
 }
 
 /**
