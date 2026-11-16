@@ -313,9 +313,13 @@ main() {
   local prev=""
   [ -L "${BASE}/current" ] && prev="$(readlink "${BASE}/current")"
   if [ "${managed}" = 1 ]; then
+    # 止める前に、新しい版の daemon で設定を検査する（通らない設定で起動し直すと、起動のたびに落ち続ける。Issue #65）
+    if ! run_masked "${VDIR}/${DIST_DIR}/bin/touryou-daemon" --check-config --config "${BASE}/config.json"; then
+      die "config.json が、v${ver} の daemon の設定の検査を通らない（repoRoot・rootCwd・worktreeRoot が、ない・実パスでない・git のリポジトリでない、など。上の「失敗」の行）" "config.json の値を、今ある git のリポジトリ・フォルダの実パスに直してから（または設定をやり直してから）、もう一度 /touryou:setup" "daemon は止めていない（v${old} のまま）。v${ver} は \$HOME/.touryou/v${ver} に置いたが、current は v${old} のまま"
+    fi
     say "常駐の daemon（v${old}）を止めます"
     if ! run_masked "${BASE}/current/bin/touryou" launchd init; then
-      die "常駐の生成物が、引数なしの launchd init と違う（--org・--path-prefix を手で付けた、など）" "docs/launchd.md の手作業の手順で版を上げる" "daemon は止めていない（v${old} のまま動いている）。v${ver} は \$HOME/.touryou/v${ver} に置いたが、current は v${old} のまま"
+      die "v${old} の launchd init が通らない（上の出力。生成物が、引数なしの launchd init と違う〔--org・--path-prefix を手で付けた、など〕か、v${old} の設定の検査が通らない）" "docs/launchd.md の手作業の手順で版を上げる" "daemon は止めていない（v${old} のまま動いている）。v${ver} は \$HOME/.touryou/v${ver} に置いたが、current は v${old} のまま"
     fi
     if ! run_masked "${BASE}/current/bin/touryou" launchd stop; then
       restore_old "常駐の daemon を止められなかった"

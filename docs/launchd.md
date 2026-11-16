@@ -46,6 +46,9 @@ macOS（arm64）で、`touryou-daemon` を、ログイン時に自動で動か�
 `init` と `apply` は、何かを書く・置く・`launchctl` を呼ぶ前に、`config.json` を **daemon と同じ検査**にかけます（`<H>/.touryou/current/bin/touryou-daemon --check-config --config <H>/.touryou/config.json`。daemon は起動せず、窓口・`state` に触れません）。
 
 - 中身: 設定の読み込み（daemon の起動と同じ検査）と、`repoRoot`・`worktreeRoot` が実在する実パス（リンクを解決したもの）であること・`rootCwd` が `repoRoot` の配下に実在すること・`repoRoot` が git のリポジトリであること。
+- 検査には、`HOME` と plist と同じ `PATH`（`--path-prefix` を含む）だけを渡します（常駐のときと同じ場所で `git` を探す。呼んだ側の環境は受け継がない）。
+- 検査そのものを実行できない（daemon が置かれていない・`--check-config` を知らない古い版・時間切れ）ときは、設定の誤りと分けて「設定を検査できない」と出し、`/touryou:setup` での入れ直しを案内して止まります。
+- 版を上げるとき（`/setup` の `--restart-daemon`）は、常駐の daemon を止める**前に**、新しい版の daemon で同じ検査をします。通らなければ、何も止めずに終わります。
 - 通らなければ、**何も生成せず・plist を置かず・`launchctl` を呼ばずに**、終了コード 1 で止まります。理由（daemon の `失敗 [code]: …` と「次の操作」）と直し方を出します。**値（パス）は `<パス>` に伏せます**。
 - 例: 前の日に消したフォルダを `repoRoot` が指したまま常駐にすると、daemon は起動のたびに `invalidConfig` で落ち、`KeepAlive` で起こし直され続けます。これを、常駐にする前に止めます。直したら（`config.json` の値を、今ある git のリポジトリ・フォルダの実パスにする。`/setup` のやり直しでもよい）、もう一度実行します。
 

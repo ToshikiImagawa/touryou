@@ -211,8 +211,8 @@ async function statusLines(ctx: Ctx): Promise<{ lines: string[]; ok: boolean }> 
       const last = lastFailure(u.log);
       lines.push(
         last === undefined
-          ? `  最後の失敗: ログ（${u.log}）に、失敗の行がない`
-          : `  最後の失敗（ログ ${u.log}。値は伏せた）: ${last}`,
+          ? `  最後の失敗: ログ（logs/${u.name}.log）に、失敗の行がない`
+          : `  最後の失敗（logs/${u.name}.log。値は伏せた）: ${last}`,
       );
     }
   }
@@ -264,9 +264,6 @@ const isGeneratedScript = (ctx: Ctx, _u: Unit, text: string): boolean =>
 const isRegular = (p: string): boolean => lstatOr(p)?.isFile() === true;
 
 async function apply(ctx: Ctx): Promise<CommandResult> {
-  // 通らない設定で常駐にすると、KeepAlive で起こし直され、起動のたびに落ち続ける。plist を置く前・launchctl の前に止める
-  const problem = configProblem(ctx.base, ctx.deps.checkConfig);
-  if (problem !== undefined) return fail(problem, 1);
   const missing = ctx.units.flatMap((u) => [u.plistSrc, u.script]).filter((p) => !isRegular(p));
   if (missing.length > 0) {
     return fail(
@@ -282,6 +279,13 @@ async function apply(ctx: Ctx): Promise<CommandResult> {
         1,
       );
     }
+    // 通らない設定で常駐にすると、KeepAlive で起こし直され、起動のたびに落ち続ける。plist を置く前・launchctl の前に止める
+    const problem = configProblem(
+      ctx.home,
+      pathValueOf(text) ?? DEFAULT_PATH,
+      ctx.deps.checkConfig,
+    );
+    if (problem !== undefined) return fail(problem, 1);
   }
 
   const agents = lstatOr(ctx.agentsDir);

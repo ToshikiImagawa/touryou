@@ -103,6 +103,38 @@ describe("設定の検査（daemon の --check-config）", () => {
     expect(existsSync(join(base, "bin"))).toBe(false);
   });
 
+  it("検査を実行できない（終了コード 2〔古い daemon〕など）ときは、設定の誤りと分けて止める", async () => {
+    const { home, base } = makeHome();
+    writeFileSync(join(base, "current", "bin", "touryou-daemon"), "#!/bin/sh\nexit 2\n", {
+      mode: 0o755,
+    });
+    const r = await run(home, ["init", "--org", ORG]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/設定を検査できない/);
+    expect(r.stderr).not.toMatch(/検査を通らない/);
+    expect(existsSync(join(base, "launchd"))).toBe(false);
+  });
+
+  it("検査には、HOME と plist と同じ PATH だけを渡す（呼んだ側の環境を受け継がない）", async () => {
+    const { home } = makeHome();
+    const seen: Record<string, string>[] = [];
+    const r = await runBin(
+      ["launchd", "init", "--org", ORG, "--path-prefix", "/opt/homebrew/bin"],
+      {
+        env: { HOME: home, GIT_DIR: "/elsewhere" },
+        isTTY: { stdin: false, stdout: false },
+        launchd: {
+          checkConfig: (_c, _a, env) => {
+            seen.push({ ...env });
+            return { status: 0, stdout: "", stderr: "" };
+          },
+        },
+      },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(seen).toEqual([{ HOME: home, PATH: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" }]);
+  });
+
   it("daemon の入口を実行できなければ、止める", async () => {
     const { home, base } = makeHome();
     rmSync(join(base, "current", "bin", "touryou-daemon"));

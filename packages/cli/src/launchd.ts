@@ -25,8 +25,14 @@ export interface RunResult {
   readonly stdout: string;
   readonly stderr: string;
 }
-/** daemon の入口（`cmd`）を、引数 `args` で実行する。 */
-export type ConfigChecker = (cmd: string, args: readonly string[]) => RunResult;
+/**
+ * daemon の入口（`cmd`）を、引数 `args`・環境 `env` だけで実行する（呼んだ側の環境は渡さない。常駐のときと同じ HOME・PATH にする）。
+ */
+export type ConfigChecker = (
+  cmd: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+) => RunResult;
 
 /**
  * 出す前に、値を伏せる: 絶対パスを `<パス>` に置き換え、制御文字を除き、長さを切る（設定・ログの値を、そのまま出さない）。
@@ -45,10 +51,23 @@ export function maskValues(text: string, max = 200): string {
  * repoRoot・rootCwd・worktreeRoot が実在する実パスか・repoRoot が git のリポジトリか）。
  * 通れば undefined。通らなければ、止める理由と直し方（値は伏せる）。
  */
-export function configProblem(base: string, check: ConfigChecker): string | undefined {
+export function configProblem(
+  home: string,
+  path: string,
+  check: ConfigChecker,
+): string | undefined {
+  const base = join(home, ".touryou");
   const daemon = join(base, "current", "bin", "touryou-daemon");
-  const r = check(daemon, ["--check-config", "--config", join(base, "config.json")]);
+  // plist と同じ HOME・PATH（git は、この PATH で探す）
+  const r = check(daemon, ["--check-config", "--config", join(base, "config.json")], {
+    HOME: home,
+    PATH: path,
+  });
   if (r.status === 0) return undefined;
+  if (r.status !== 1) {
+    // 起動できない・タイムアウト（null）、引数の誤り（2。--check-config を知らない古い daemon）は、設定の誤りと分ける
+    return `current の daemon で、設定を検査できない（終了コード ${r.status ?? "なし"}。daemon が置かれていない・版が古い・時間切れ）。何もせずに止めた。/touryou:setup で入れ直してから、もう一度実行する`;
+  }
   const lines = r.stderr
     .split("\n")
     .filter((l) => l.trim() !== "")
@@ -248,7 +267,7 @@ export function runLaunchd(argv: readonly string[], deps: LaunchdDeps): CommandR
       1,
     );
   }
-  const problem = configProblem(base, deps.checkConfig);
+  const problem = configProblem(home, pathValue, deps.checkConfig);
   if (problem !== undefined) return fail(problem, 1);
 
   const binDir = join(base, "bin");

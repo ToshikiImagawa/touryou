@@ -40,13 +40,16 @@ const tmp = () => {
 const sha = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
 
 /** 仮の配布物（tar.gz）を作る。stub の touryou は、呼ばれた引数を $HOME/calls.log に足す。 */
-const makeTarball = (ver, { extra, failApply = false, daemonOk = true } = {}) => {
+const makeTarball = (
+  ver,
+  { extra, failApply = false, daemonOk = true, configBad = false } = {},
+) => {
   const d = tmp();
   const bin = join(d, "touryou-darwin-arm64", "bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(
     join(bin, "touryou-daemon"),
-    `#!/bin/sh\n[ "$1" = "--help" ] && { echo "usage: touryou-daemon"; exit ${daemonOk ? 0 : 1}; }\nexit 0\n`,
+    `#!/bin/sh\n[ "$1" = "--help" ] && { echo "usage: touryou-daemon"; exit ${daemonOk ? 0 : 1}; }\n[ "$1" = "--check-config" ] && { echo "失敗 [invalidConfig]: repoRoot $HOME/gone が、実パスでない" >&2; exit ${configBad ? 1 : 0}; }\nexit 0\n`,
   );
   writeFileSync(
     join(bin, "touryou"),
@@ -283,6 +286,18 @@ test("版が変わる（常駐あり）・--restart-daemon: 古い版で init（
     "v0.9.0 launchd stop",
     "v1.0.0 launchd apply --yes",
   ]);
+});
+
+test("版が変わる（常駐あり）・新しい版の設定の検査が通らない: 止めずに（init・stop も呼ばずに）終わる。HOME は伏せる", () => {
+  const h = managedHome();
+  const tb = makeTarball("1.0.0", { configBad: true });
+  const r = install(makePlugin("1.0.0", tb), h, tb, ["--restart-daemon"]);
+  assert.equal(r.status, 1, out(r));
+  assert.match(r.stdout, /設定の検査を通らない/);
+  assert.match(r.stdout, /invalidConfig/);
+  assert.ok(!r.stdout.includes(h), out(r));
+  assert.equal(cur(h), join(h, ".touryou", "v0.9.0", "touryou-darwin-arm64"));
+  assert.deepEqual(lines(join(h, "calls.log")), []);
 });
 
 test("版が変わる（常駐あり）・新しい版の apply が失敗: current を古い版に戻して、起動し直す", () => {

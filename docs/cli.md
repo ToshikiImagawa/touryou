@@ -120,7 +120,7 @@ touryou answer <decisionId> --choice "<選択肢>" --yes --expect <digest>  # �
 
 - 窓口・人間のトークン・環境変数（`TOURYOU_DAEMON_URL` など）は使わない（`HOME` だけ）。
 - **`init` は `launchctl` を実行しない**（読み込みは、下の `touryou launchd apply`）。起動する子プロセスは、設定の検査（`touryou-daemon --check-config`）だけ。トークンの値は、生成も表示もしない。
-- **生成する前に、`config.json` を daemon と同じ検査にかける**（設定の読み込み・`repoRoot`・`rootCwd`・`worktreeRoot` が実在する実パスか・`repoRoot` が git のリポジトリか。daemon は起動しない）。通らなければ、何も生成せずに終了コード 1 で止まり、理由と直し方を出す（値〔パス〕は `<パス>` に伏せる）。
+- **生成する前に、`config.json` を daemon と同じ検査にかける**（設定の読み込み・`repoRoot`・`rootCwd`・`worktreeRoot` が実在する実パスか・`repoRoot` が git のリポジトリか。daemon は起動しない）。通らなければ、何も生成せずに終了コード 1 で止まり、理由と直し方を出す（値〔パス〕は `<パス>` に伏せる）。検査には `HOME` と plist と同じ `PATH` だけを渡す。検査を実行できない（daemon がない・古い版・時間切れ）ときは「設定を検査できない」と分けて出す。
 - 既存のファイルは、黙って上書きしない。生成先がシンボリックリンクなら、辿らずに止まる。
 - `--org` を省略すると、plist の Label は、組織のドメインを含まない `touryou.daemon`。自分のドメインにしたいときは `--org com.example` のように付けると `com.example.touryou.daemon` になる。不正な値（小文字の英数字とハイフンのラベルを、ドットで 2 つ以上つないだ形でない）は拒否する。
 - 秘密は扱わない（子の認証を外した（CLI の子は、親のセッションが `claude --bg` で起動する））。常駐は daemon だけ（子用の HTTP の `touryou-mcp` の常駐は外した）。

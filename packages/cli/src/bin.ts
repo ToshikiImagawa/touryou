@@ -55,8 +55,13 @@ export interface BinDeps {
 }
 
 /** 設定の検査（`touryou-daemon --check-config`）を、子プロセスで実行する（窓口・state には触れない）。 */
-const checkConfigBySpawn = (cmd: string, args: readonly string[]) => {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 30_000 });
+const checkConfigBySpawn = (
+  cmd: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+) => {
+  // 環境は、渡したものだけ（呼んだ側の PATH・GIT_DIR などを受け継がない）
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 30_000, env: { ...env } });
   return {
     status: r.status,
     stdout: r.stdout ?? "",
