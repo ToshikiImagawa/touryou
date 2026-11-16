@@ -654,7 +654,7 @@ for (const { label, env } of LOCALES) {
   });
 }
 
-// --- 古い形（v0.1.1 まで。run-daemon.sh を起こす plist）からの引っ越し（#64） ---
+// --- 古い形（v0.1.0 まで。run-daemon.sh を起こす plist）からの引っ越し（#64） ---
 
 test("常駐の版上げ・新しい版の init が失敗: 新しい版の uninstall のあと、古い版の init と apply で起動し直す", () => {
   const h = managedHome();

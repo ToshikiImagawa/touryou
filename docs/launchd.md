@@ -38,7 +38,7 @@ macOS（arm64）で、`touryou-daemon` を、ログイン時に自動で動か�
 | `launchd/<Label>.plist` | 0644 | 下の 2 |
 | `logs/`（ディレクトリ） | 0700 | daemon のログ `daemon.log` |
 
-- **古い形からの引っ越し**: v0.1.1 までの `init` は、`bin/run-daemon.sh`（`#!/bin/sh`）を作り、plist はそれを起こしていました。新しい `init` は、`launchd/<Label>.plist` と `bin/run-daemon.sh` が、**同じ `--org`・`--path-prefix` の古い `init` が生成したものとバイト単位で同じとき**だけ、plist を新しい形に置き換えます（`run-daemon.sh` は、`LaunchAgents` の古い形が次のログインで起こしうるので、まだ消しません）。どちらかを手で直していれば、何も書かず・消さずに止まります。`apply` は、`LaunchAgents` の plist が同じ `PATH` の古い形なら、止めて（`launchctl bootout`）から置き換えて読み込み、そのあとで `run-daemon.sh`（古い形と同じもの）を消します。`uninstall` は、古い形・新しい形のどちらも外します。
+- **古い形からの引っ越し**: v0.1.0 までの `init` は、`bin/run-daemon.sh`（`#!/bin/sh`）を作り、plist はそれを起こしていました。新しい `init` は、`launchd/<Label>.plist` と `bin/run-daemon.sh` が、**同じ `--org`・`--path-prefix` の古い `init` が生成したものとバイト単位で同じとき**だけ、plist を新しい形に置き換えます（`run-daemon.sh` は、`LaunchAgents` の古い形が次のログインで起こしうるので、まだ消しません）。どちらかを手で直していれば、何も書かず・消さずに止まります。`apply` は、`LaunchAgents` の plist が同じ `PATH` の古い形なら、止めて（`launchctl bootout`）から置き換えて読み込み、そのあとで `run-daemon.sh`（古い形と同じもの）を消します。`uninstall` は、古い形・新しい形のどちらも外します。
 - `--path-prefix`: plist の `PATH` の先頭に足すディレクトリ（コロン区切りの絶対パス。Homebrew の `git` を使うときなど）。既定の `PATH` は `/usr/bin:/bin:/usr/sbin:/sbin`。
 
 ### 設定の検査（`init`・`apply` の前）
@@ -76,7 +76,8 @@ macOS（arm64）で、`touryou-daemon` を、ログイン時に自動で動か�
 
 ### ログイン項目に `sh`・`bash` が残っているとき
 
-- v0.1.1 までは、plist が `run-daemon.sh`（`#!/bin/sh`）を起こし、それがさらに起動スクリプトを起こしていたので、ログイン項目に `run-daemon.sh`・`sh`・`bash` の 3 つが「開発元を識別できない項目」として出ました（macOS の `/bin/sh` は、`bash` などを呼び直す入口です）。マルウェアではありません。
+- v0.1.0 までは、plist が `run-daemon.sh`（`#!/bin/sh`）を起こし、それがさらに起動スクリプトを起こしていたので、ログイン項目に `run-daemon.sh`・`sh`・`bash` の 3 つが「開発元を識別できない項目」として出ました（macOS の `/bin/sh` は、`bash` などを呼び直す入口です）。マルウェアではありません。
+- `sh`・`bash` は、Apple が署名した macOS のプログラム（チーム ID がないので、開発元の名前が出ない）。確かめ方: `codesign -dvv /bin/sh 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier)'`（`Identifier=com.apple.sh`・`Authority=Software Signing`・`TeamIdentifier=not set`）。スイッチはオフにしない（常駐を入れ直したときに止まるおそれがある）。
 - 新しい版へ上げたあと（引っ越しのあと）、および `uninstall` のあとも、`sh`・`bash` の項目が残ることがあります（11-15 の実機で、`uninstall` のあとに残った）。TouRyou は、もうそれらを起こしません。**残っていても害はありません**。
 - `sfltool resetbtm` は、ログイン項目の記録を**ほかのアプリの分まで全部**消してしまう（再起動が要り、各アプリの許可を取り直すことになる）ので、**勧めません**。
 - 手で行うときは、`init` が出す命令（`cp` と `launchctl bootstrap "gui/$(id -u)" …`・`launchctl bootout "gui/$(id -u)/<Label>"`）を、そのまま使える。

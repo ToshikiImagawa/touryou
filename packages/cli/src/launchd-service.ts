@@ -109,7 +109,7 @@ interface Ctx {
 interface Unit {
   readonly name: "daemon";
   readonly label: string;
-  /** 古い形（v0.1.1 まで）の起動スクリプト。いまは生成しない。古い形と同じなら、uninstall で消す。 */
+  /** 古い形（v0.1.0 まで）の起動スクリプト。いまは生成しない。古い形と同じなら、uninstall で消す。 */
   readonly legacyScript: string;
   readonly plistSrc: string;
   readonly plistDest: string;
@@ -268,7 +268,7 @@ function isGeneratedPlist(ctx: Ctx, u: Unit, text: string): boolean {
   );
 }
 
-/** 古い形（v0.1.1 まで）の init が生成するのと、バイト単位で同じ plist か（#64。PATH の値の扱いは、新しい形と同じ）。 */
+/** 古い形（v0.1.0 まで）の init が生成するのと、バイト単位で同じ plist か（#64。PATH の値の扱いは、新しい形と同じ）。 */
 function isLegacyPlist(ctx: Ctx, u: Unit, text: string): boolean {
   const path = pathValueOf(text);
   return (
@@ -302,7 +302,7 @@ async function apply(ctx: Ctx): Promise<CommandResult> {
     const text = readOr(u.plistSrc) ?? "";
     if (isLegacyPlist(ctx, u, text)) {
       return fail(
-        `${u.plistSrc} が、古い形（run-daemon.sh を起こす。v0.1.1 まで）のまま。同じ --org・--path-prefix で touryou launchd init を実行して、新しい形に置き換えてから、やり直す`,
+        `${u.plistSrc} が、古い形（run-daemon.sh を起こす。v0.1.0 まで）のまま。同じ --org・--path-prefix で touryou launchd init を実行して、新しい形に置き換えてから、やり直す`,
         1,
       );
     }
@@ -342,7 +342,7 @@ async function apply(ctx: Ctx): Promise<CommandResult> {
       isLegacyPlist(ctx, u, dest) &&
       pathValueOf(dest) === pathValueOf(src)
     ) {
-      // 古い形（v0.1.1 まで）を apply が置いたもの。同じ --org・PATH の新しい形に、置き換える（#64）
+      // 古い形（v0.1.0 まで）を apply が置いたもの。同じ --org・PATH の新しい形に、置き換える（#64）
       toReplace.push(u);
     } else if (dest === undefined || dest !== src) {
       return fail(
@@ -506,7 +506,7 @@ function uninstall(ctx: Ctx): CommandResult {
   };
   for (const u of ctx.units) {
     // LaunchAgents の plist は、.touryou/launchd の plist とバイト単位で同じとき（apply が置いたもの）だけ消す。
-    // 古い形（v0.1.1 まで）を apply が置いたまま、init だけ新しい形にした場面では、同じ PATH の古い形も消す（#64）
+    // 古い形（v0.1.0 まで）を apply が置いたまま、init だけ新しい形にした場面では、同じ PATH の古い形も消す（#64）
     const src = readOr(u.plistSrc);
     const srcOk =
       src !== undefined && (isGeneratedPlist(ctx, u, src) || isLegacyPlist(ctx, u, src));

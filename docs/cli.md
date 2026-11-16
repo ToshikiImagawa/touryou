@@ -121,7 +121,7 @@ touryou answer <decisionId> --choice "<選択肢>" --yes --expect <digest>  # �
 - 窓口・人間のトークン・環境変数（`TOURYOU_DAEMON_URL` など）は使わない（`HOME` だけ）。
 - **`init` は `launchctl` を実行しない**（読み込みは、下の `touryou launchd apply`）。起動する子プロセスは、設定の検査（`touryou-daemon --check-config`）だけ。トークンの値は、生成も表示もしない。
 - **生成する前に、`config.json` を daemon と同じ検査にかける**（設定の読み込み・`repoRoot`・`rootCwd`・`worktreeRoot` が実在する実パスか・`repoRoot` が git のリポジトリか。daemon は起動しない）。通らなければ、何も生成せずに終了コード 1 で止まり、理由と直し方を出す（値〔パス〕は `<パス>` に伏せる）。検査には `HOME` と plist と同じ `PATH` だけを渡す。検査を実行できない（daemon がない・古い版・時間切れ）ときは「設定を検査できない」と分けて出す。
-- 既存のファイルは、黙って上書きしない。生成先がシンボリックリンクなら、辿らずに止まる。ただし、古い形（v0.1.1 まで。`bin/run-daemon.sh` を起こす plist）の生成物が、同じ `--org`・`--path-prefix` の古い `init` の生成物とバイト単位で同じなら、plist を新しい形に置き換える（違えば止まる）。`run-daemon.sh` は、`apply` が LaunchAgents の plist を新しい形にしたあとに消す（`init` と `apply` の間で止まっても、次のログインで、ない起動スクリプトを起こさないように）。
+- 既存のファイルは、黙って上書きしない。生成先がシンボリックリンクなら、辿らずに止まる。ただし、古い形（v0.1.0 まで。`bin/run-daemon.sh` を起こす plist）の生成物が、同じ `--org`・`--path-prefix` の古い `init` の生成物とバイト単位で同じなら、plist を新しい形に置き換える（違えば止まる）。`run-daemon.sh` は、`apply` が LaunchAgents の plist を新しい形にしたあとに消す（`init` と `apply` の間で止まっても、次のログインで、ない起動スクリプトを起こさないように）。
 - `--org` を省略すると、plist の Label は、組織のドメインを含まない `touryou.daemon`。自分のドメインにしたいときは `--org com.example` のように付けると `com.example.touryou.daemon` になる。不正な値（小文字の英数字とハイフンのラベルを、ドットで 2 つ以上つないだ形でない）は拒否する。
 - 秘密は扱わない（子の認証を外した（CLI の子は、親のセッションが `claude --bg` で起動する））。常駐は daemon だけ（子用の HTTP の `touryou-mcp` の常駐は外した）。
 - 終了コード: 0 成功 / 1 前提（`/setup`）がない・設定の検査が通らない・既存と違う・権限の確認で問題 / 2 引数の誤り。
@@ -142,7 +142,7 @@ touryou answer <decisionId> --choice "<選択肢>" --yes --expect <digest>  # �
 
 - `apply`・`uninstall` は、**`--yes` がないと何もしない**（終了コード 2）。永続化・削除なので、利用者の同意を取ってから付ける（`/setup`・`/touryou:service` が定型文で聞く）。
 - `apply`・`restart` が途中で止まったとき（窓口が約 60 秒で応答しない）は、**daemon は読み込み済みのまま**（KeepAlive で動き続けうる）。`touryou launchd stop` で止めるか、直してから `apply --yes` をやり直す。
-- `uninstall` は、`init` が作るのと同じ内容（`--path-prefix` の違いを含む。PATH の値はファイルから取って作り直して比べる）とバイト単位で同じもの（LaunchAgents の plist は `.touryou/launchd` の plist と同じもの）だけを消す。古い形（v0.1.1 まで）も、同じ内容なら消す。LaunchAgents の plist が `.touryou/launchd` の plist と違っても、同じ PATH の古い形なら消す（`init` だけ新しい形にした場面）。LaunchAgents の plist を残したときは、古い形の起動スクリプトも残す（次のログインで、ないスクリプトを指さないように）。
+- `uninstall` は、`init` が作るのと同じ内容（`--path-prefix` の違いを含む。PATH の値はファイルから取って作り直して比べる）とバイト単位で同じもの（LaunchAgents の plist は `.touryou/launchd` の plist と同じもの）だけを消す。古い形（v0.1.0 まで）も、同じ内容なら消す。LaunchAgents の plist が `.touryou/launchd` の plist と違っても、同じ PATH の古い形なら消す（`init` だけ新しい形にした場面）。LaunchAgents の plist を残したときは、古い形の起動スクリプトも残す（次のログインで、ないスクリプトを指さないように）。
 - `--org` は `init` と同じ値にする（省略すると Label は `touryou.daemon`）。
 - 終了コード: 0 成功 / 1 前提がない・設定の検査が通らない・既存と違う・起動の確認で問題・消せなかったものがある / 2 引数の誤り・`--yes` がない。
 

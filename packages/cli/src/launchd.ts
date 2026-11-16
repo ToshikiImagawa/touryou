@@ -124,7 +124,7 @@ daemon を、launchd で常駐させるための plist を生成する（同梱�
                                          止めて、touryou が生成した plist（古い形の run-daemon.sh も）を消す（logs・state は残す）
 
 出力先: <HOME>/.touryou/launchd（plist 0644）・<HOME>/.touryou/logs（0700）。
-古い形（v0.1.1 まで。<HOME>/.touryou/bin/run-daemon.sh を起こす plist）は、生成したものと同じときだけ、新しい形に置き換える。
+古い形（v0.1.0 まで。<HOME>/.touryou/bin/run-daemon.sh を起こす plist）は、生成したものと同じときだけ、新しい形に置き換える。
 前提: /setup を実行済み（<HOME>/.touryou/config.json と <HOME>/.touryou/current がある）。再実行できる（既存のファイルは上書きしない）。
 `;
 
@@ -138,7 +138,7 @@ const xml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
- * 古い形（v0.1.1 まで）の起動スクリプト（daemon）。いまは生成しない。古い形の生成物と、バイト単位で同じかを確かめて、
+ * 古い形（v0.1.0 まで）の起動スクリプト（daemon）。いまは生成しない。古い形の生成物と、バイト単位で同じかを確かめて、
  * 新しい形へ引っ越す（init）・外す（uninstall）ときだけに使う（#64）。
  */
 export function runDaemonScript(base: string): string {
@@ -150,7 +150,7 @@ exec "$base/current/bin/touryou-daemon" --config "$base/config.json"
 `;
 }
 
-/** 古い形（v0.1.1 まで）の起動スクリプトの置き場所。 */
+/** 古い形（v0.1.0 まで）の起動スクリプトの置き場所。 */
 export const legacyScriptPath = (base: string): string => join(base, "bin", "run-daemon.sh");
 
 /**
@@ -207,7 +207,7 @@ export function plistText(opts: {
   return plistBody(`<array>\n${items}\n  </array>`, opts);
 }
 
-/** 古い形（v0.1.1 まで。ProgramArguments が起動スクリプト 1 つ）の plist。引っ越し・外すときの確かめだけに使う。 */
+/** 古い形（v0.1.0 まで。ProgramArguments が起動スクリプト 1 つ）の plist。引っ越し・外すときの確かめだけに使う。 */
 export function legacyPlistText(opts: {
   readonly label: string;
   readonly script: string;
@@ -350,7 +350,7 @@ export function runLaunchd(argv: readonly string[], deps: LaunchdDeps): CommandR
       mode: 0o644,
     },
   ];
-  // 古い形（v0.1.1 まで）の生成物。同じ --org・--path-prefix の init が生成したものと、バイト単位で同じときだけ、置き換える（#64）
+  // 古い形（v0.1.0 まで）の生成物。同じ --org・--path-prefix の init が生成したものと、バイト単位で同じときだけ、置き換える（#64）
   const legacyScript = legacyScriptPath(base);
   const legacyPlist = legacyPlistText({ ...common, script: legacyScript });
   const readRegular = (p: string): string | undefined => {

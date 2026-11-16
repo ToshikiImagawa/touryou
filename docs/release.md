@@ -10,7 +10,9 @@ claude plugin marketplace add comcreate/touryou
 
 ## 版の決まり
 
-- 版は semver。`plugin/.claude-plugin/plugin.json`・ルートと `packages/*` の `package.json` の `version`、`CHANGELOG.md` の節を、すべて同じ版にそろえる（`release.yml` の `version` のジョブが、タグと全部が同じでなければ失敗する）。
+- 版は semver。`plugin/.claude-plugin/plugin.json`・ルートと `packages/*` の `package.json` の `version` を、すべて同じ版にそろえる（`release.yml` の `version` のジョブが、タグと plugin.json・ルートと `packages/*` の package.json が同じでなければ失敗する）。
+- `CHANGELOG.md` に、同じ版の節を作る（`release.yml` は CHANGELOG を見ないので、準備の PR のレビューで確かめる）。節は `## <版>（<tag の日 YYYY-MM-DD>）` とし、中を「利用者に見える変更」「内部の変更」「上げ方」に分ける。項は `- **題**（#N）: 説明`。`## 未公開` の項は、この節に移す（`## 未公開` の見出しは残す）。日付は、tag を付ける日にする（準備の PR を出す日と tag の日が違うときは、準備の PR の中で、マージの前に tag の日に直す。日付だけを直す PR は作らない。tag は、そのマージのコミットに付ける）。
+- 準備の PR では、前の版の tag からマージされた PR に、項の抜けがないかを `git log v<前の版>..origin/main --oneline` で確かめる。
 - 版に `-` があれば（例: `0.2.0-rc.0`）、Release は pre-release になる。
 - 最初の公開は `0.1.0`（決定）。
 
@@ -43,7 +45,7 @@ claude plugin marketplace add comcreate/touryou
 4. `.github/workflows/release.yml` が、`plugin/` の中身を根にした zip（`touryou-<版>.zip`）と、その `.sha256` を Release に付ける。sha256 と URL は、実行の Summary に出る。Release は不変に扱う（付け直し〔`--clobber`〕はしない。Release がすでにあれば、ワークフローは失敗する。やり直し方は、下の「やり直す」）。
    同じ実行で、macOS（**arm64 のみ**）の配布物（Node 同梱の `touryou-<版>-darwin-arm64.tar.gz` と `.sha256`）を作り、展開して daemon が起動する確認（smoke。`scripts/dist-smoke.sh`）を通したものだけを、同じ Release に付ける（失敗すると、Release は作られない）。smoke は、はじめに、利用者の `/setup` と同じ中身の検査（`scripts/dist-check.sh`。`plugin/scripts/install-runtime.sh` を source して `check_list`・`check_types`・`check_kinds`・`check_links` を使い、行き先のないリンクも断る）を tar.gz に当てる。`scripts/dist-build.sh` は、lib の外を指す・行き先のないシンボリックリンク（pnpm deploy が残す `.pnpm/node_modules/@touryou/daemon`）を取り除き、取り除いたものをビルドの出力に出す（#56）。あわせて、Claude デスクトップアプリの拡張機能 `touryou-mcp-<版>.mcpb` と `.sha256` も作る（`scripts/mcpb-build.sh`。JS だけ・未署名。`docs/desktop-extension.md`）。Release の asset は、zip・tar.gz・.mcpb と、それぞれの `.sha256` の 6 ファイル。配布物の sha256 は `checksums.json`（`scripts/make-checksums.mjs` が、リリースの実行の中で `plugin/` に書く。リポジトリにはない）に入れ、zip に入れる。利用者の `/setup` が、plugin の中の `scripts/install-runtime.sh` で、これと照合する（script も zip に入り、許可リストで `scripts/install-runtime.sh`・`scripts/runtime-version-notice.sh` だけを通す）。
 5. `marketplace-self` のジョブが、`.claude-plugin/marketplace.json` を新しい版に書き換える PR を出す。中身（3 つの値）を確かめてマージする。PR が出なければ、Summary の値で手で直して PR を出す（Release はそのままでよい）。
-6. **tag の後の確かめ**（marketplace の PR のマージの前と後）: マージの前に、Release の zip の `checksums.json` を確かめる（`unzip -p touryou-<版>.zip checksums.json`）。マージのあとに、前の版を入れた Mac で update → `/touryou:setup`（S12）→ Q8。手順は `docs/setup-verification.md` の C。不具合が出たら、版を上げて直す（Release は付け直さない）。
+6. **tag の後の確かめ**（marketplace の PR のマージの前と後）: マージの前に、Release の zip の `checksums.json` を確かめる（`unzip -p touryou-<版>.zip checksums.json`）。続けて、本番の zip を手元の写しにして、常駐している前の版の Mac で `/touryou:setup` の版上げを通す（取得先の書き換えは要らない）。マージのあとに、前の版を入れた Mac で update → `/touryou:setup`（S12）→ Q8。手順は `docs/setup-verification.md` の C。不具合が出たら、版を上げて直す（Release は付け直さない）。
 
 ## 配布物では効かない、開発用の抜け道
 
@@ -174,7 +176,27 @@ marketplace への PR だけが出なかった（Release は正しく作られ�
 
 準備: fork を作り、fork の Actions を有効にする（fork では既定で無効）。手元で fork を clone し、`origin` が fork であることを確かめる（**上流に push しない**。`git push --tags` は使わない）。
 
-検証用の版は、本番で使わない pre-release にする（例: `0.1.1-rc.0`）。上流に同名のタグがないことを、先に確かめる。
+フォークで分かっていること（v0.1.1 の前に試したとき）:
+
+- **作った直後のフォークには、ワークフローが 1 つも登録されていない**（`gh api "repos/<自分のアカウント>/touryou/actions/workflows" --jq .total_count` が `0`）。このままタグを push しても、何も起きない。先に、フォークの main を本番の main に追いつかせる push をすると、登録される（下のコマンド。`origin` は fork）。
+
+  ```sh
+  git fetch https://github.com/comcreate/touryou main && git push origin FETCH_HEAD:main
+  ```
+
+- **コミットのメールが非公開のアドレスだと、push が `GH007` で断られる**。fork の clone の中だけ、noreply にする（値は文書に書かない）。
+
+  ```sh
+  git config user.email "$(gh api user --jq '"\(.id)+\(.login)@users.noreply.github.com"')"
+  ```
+
+- **実行の確かめ**は、`gh run list --workflow release.yml` だと、登録の前は 404 になる。`gh api "repos/<自分のアカウント>/touryou/actions/runs" --jq '.workflow_runs[] | [.name, .event, .status, .conclusion, .head_branch] | @tsv'`（または `--workflow` なしの `gh run list --repo <自分のアカウント>/touryou`）で見る。
+- **登録のあとでも、push で動きが起きないことがある**。v0.1.1 の前に試したときは、フォークへの push が出来事（events API の `PushEvent` など）として記録されず、タグの push で release.yml が起きなかった。同じタグを消して push し直しても、新しい rc のタグでも起きなかった。手で起こした実行（`workflow_dispatch`）は動いた。そのときは、次のようにする（**本番の release.yml には足さない**）。
+  - 検証用の枝（`verify-release`）の `.github/workflows/release.yml` にだけ、`on:` に `workflow_dispatch:` を足してコミットする。
+  - 新しい rc のタグを付けて push し、`gh workflow run release.yml --repo <自分のアカウント>/touryou --ref "v${v}"` で起こす。タグを ref にするので、`GITHUB_REF_NAME` はタグの名前になり、`version` の照合が通る。これで Release の作成・照合・`marketplace-self` まで通った。
+- **同じタグの出し直しは、起きないことがある**。やり直しは、新しい rc の番号（`0.1.1-rc.1`、`0.1.1-rc.2`、…）で行う。
+
+検証用の版は、本番で使わない pre-release にする（例: `0.1.1-rc.0`。やり直すたびに番号を上げる）。上流に同名のタグがないことを、先に確かめる。
 
 ```sh
 acct=<自分のアカウント>
@@ -200,6 +222,28 @@ v=0.1.1-rc.0
   git push origin "v${v}"
 )
 ```
+
+**やり直す（2 回目から）**: 上の箱は `git switch -c verify-release` で始まるので、2 回目は止まる。新しい rc の番号で、次のようにする（`acct`・`v` は上の箱と同じ変数。`v` を新しい番号にする）。`workflow_dispatch:` が要るときは、タグを付ける前に、検証用の枝の release.yml に足してコミットしておく（タグはそのコミットに付ける）。
+
+```sh
+acct=<自分のアカウント>
+v=0.1.1-rc.1
+(
+  set -euo pipefail
+  [ -z "$(git ls-remote --tags origin "v${v}")" ] || { echo "fork にすでに v${v} がある" >&2; exit 1; }
+  [ -z "$(git ls-remote --tags https://github.com/comcreate/touryou "v${v}")" ] || { echo "上流に v${v} がある。別の版にする" >&2; exit 1; }
+  git switch verify-release
+  for f in plugin/.claude-plugin/plugin.json package.json packages/*/package.json; do
+    jq --arg v "${v}" '.version = $v' "${f}" >| "${f}.new" && command mv -f "${f}.new" "${f}"
+  done
+  git commit -am "verify: 検証用の版 ${v}"
+  git push origin verify-release
+  git tag "v${v}"
+  git push origin "v${v}"
+)
+```
+
+push で起きないとき（`workflow_dispatch:` を足したとき）は、続けて `gh workflow run release.yml --repo "${acct}/touryou" --ref "v${v}"` で起こす。
 
 確かめたあと、Release の asset を利用者と同じ形で取り、照合する（`shasum -a 256 -c` が `OK`）。Mac での起動・quarantine の確かめは `docs/dist-manual-verification.md`。照合が通ったら、`docs/setup-verification.md` の A'（この rc の Release で /setup を確かめる）に進む。
 
