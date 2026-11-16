@@ -15,6 +15,50 @@ import type { CommandResult } from "./commands.js";
 
 export interface LaunchdDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** 設定の検査（`<base>/current/bin/touryou-daemon --check-config`）を実行する。 */
+  readonly checkConfig: ConfigChecker;
+}
+
+/** 外部コマンドの結果。 */
+export interface RunResult {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+/** daemon の入口（`cmd`）を、引数 `args` で実行する。 */
+export type ConfigChecker = (cmd: string, args: readonly string[]) => RunResult;
+
+/**
+ * 出す前に、値を伏せる: 絶対パスを `<パス>` に置き換え、制御文字を除き、長さを切る（設定・ログの値を、そのまま出さない）。
+ */
+export function maskValues(text: string, max = 200): string {
+  const t = text
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を取り除く
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/(^|[\s(（「"'=:])\/[^\s)）」"',、。]*/g, "$1<パス>")
+    .trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/**
+ * 常駐にする前に、config.json を daemon と同じ検査にかける（daemon の `--check-config`。設定の読み込み・
+ * repoRoot・rootCwd・worktreeRoot が実在する実パスか・repoRoot が git のリポジトリか）。
+ * 通れば undefined。通らなければ、止める理由と直し方（値は伏せる）。
+ */
+export function configProblem(base: string, check: ConfigChecker): string | undefined {
+  const daemon = join(base, "current", "bin", "touryou-daemon");
+  const r = check(daemon, ["--check-config", "--config", join(base, "config.json")]);
+  if (r.status === 0) return undefined;
+  const lines = r.stderr
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .slice(0, 12)
+    .map((l) => `  ${maskValues(l)}`);
+  return [
+    "config.json が、daemon の設定の検査を通らない。常駐にすると、daemon が起動のたびに落ち続けるので、何もせずに止めた:",
+    ...(lines.length > 0 ? lines : [`  検査を実行できない（終了コード ${r.status ?? "なし"}）`]),
+    "直し方: config.json の repoRoot・rootCwd・worktreeRoot を、今ある git のリポジトリ・フォルダの実パス（リンクを解決したもの）にする（/setup のやり直しでもよい）。直したら、もう一度実行する",
+  ].join("\n");
 }
 
 /** パスに使える文字（空白は可。シェルの二重引用符・XML で、特別な意味を持つ文字を含まない）。 */
@@ -204,6 +248,8 @@ export function runLaunchd(argv: readonly string[], deps: LaunchdDeps): CommandR
       1,
     );
   }
+  const problem = configProblem(base, deps.checkConfig);
+  if (problem !== undefined) return fail(problem, 1);
 
   const binDir = join(base, "bin");
   const logsDir = join(base, "logs");

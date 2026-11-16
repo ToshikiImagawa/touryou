@@ -46,6 +46,12 @@ function makeHome(opts: { token?: boolean } = {}): { home: string; base: string;
   const state = join(base, "state");
   mkdirSync(state, { recursive: true });
   mkdirSync(join(base, "current", "bin"), { recursive: true });
+  // daemon の設定の検査の偽物（bin に fail があれば、その中身を標準エラーに出して終了コード 1）
+  writeFileSync(
+    join(base, "current", "bin", "touryou-daemon"),
+    '#!/bin/sh\nf="$(dirname "$0")/fail"\nif [ -f "$f" ]; then cat "$f" >&2; exit 1; fi\nexit 0\n',
+    { mode: 0o755 },
+  );
   writeFileSync(join(base, "config.json"), JSON.stringify({ stateDir: state }));
   if (opts.token !== false) {
     writeFileSync(join(state, "oauth-token"), TOKEN, { mode: 0o600 });
@@ -201,6 +207,53 @@ describe("apply", () => {
     const r = await bin(home, f, ["apply", "--yes", "--org", ORG]);
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(/bootstrap/);
+  });
+});
+
+describe("設定の検査（apply の前）", () => {
+  it("設定が通らなければ、plist を置かず、launchctl を呼ばずに終了コード 1", async () => {
+    const { home, base, f, agents } = await initHome();
+    writeFileSync(
+      join(base, "current", "bin", "fail"),
+      `失敗 [invalidConfig]: rootCwd ${home}/gone が、repoRoot の配下の実在するパスでない\n`,
+    );
+    const r = await bin(home, f, ["apply", "--yes", "--org", ORG]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/daemon の設定の検査を通らない/);
+    expect(r.stderr).not.toContain(home);
+    expect(f.calls).toEqual([]);
+    expect(existsSync(join(agents, `${DAEMON}.plist`))).toBe(false);
+  });
+});
+
+describe("status の最後の失敗", () => {
+  it("last exit code が 0 以外なら、daemon.log の最後の失敗の行を、値を伏せて出す", async () => {
+    const { home, base, f } = await initHome();
+    await bin(home, f, ["apply", "--yes", "--org", ORG]);
+    mkdirSync(join(base, "logs"), { recursive: true });
+    writeFileSync(
+      join(base, "logs", "daemon.log"),
+      `失敗 [invalidConfig]: 古い\n起動した: http://127.0.0.1:1\n失敗 [invalidConfig]: repoRoot ${home}/gone が、実パスでない${"あ".repeat(400)}\n次の操作:\n  - 直す\n`,
+    );
+    f.loaded.set(DAEMON, { state: "spawn", lastExit: "1" });
+    const r = await bin(home, f, ["status", "--org", ORG]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toMatch(
+      /最後の失敗.*失敗 \[invalidConfig\]: repoRoot <パス> が、実パスでない/,
+    );
+    expect(r.stdout).not.toContain(`${home}/gone`);
+    expect(r.stdout).not.toMatch(/古い/);
+    expect(r.stdout).toMatch(/…/); // 長さを切る
+  });
+
+  it("last exit code が 0 なら、出さない", async () => {
+    const { home, base, f } = await initHome();
+    await bin(home, f, ["apply", "--yes", "--org", ORG]);
+    mkdirSync(join(base, "logs"), { recursive: true });
+    writeFileSync(join(base, "logs", "daemon.log"), "失敗 [x]: y\n");
+    f.loaded.set(DAEMON, { state: "running", lastExit: "0" });
+    const r = await bin(home, f, ["status", "--org", ORG]);
+    expect(r.stdout).not.toMatch(/最後の失敗/);
   });
 });
 

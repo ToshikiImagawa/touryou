@@ -15,7 +15,7 @@ allowed-tools: Read
 
 ## 引数ごとの手順
 
-- **status**: `"$HOME/.touryou/current/bin/touryou" launchd status`。出力（読み込みの状態・終了コード・窓口の応答）を、そのまま要約して伝える。読み込まれていないときは、**出力のその行の括弧の中で分ける**（`touryou launchd status` が、LaunchAgents の plist の有無で、どちらか 1 つだけを出す。両方を並べて利用者に尋ねない）。**読み込まれていないときは、`restart` を案内しない**（読み込まれていないと使えない）。
+- **status**: `"$HOME/.touryou/current/bin/touryou" launchd status`。出力（読み込みの状態・終了コード・窓口の応答）を、そのまま要約して伝える。終了コードが 0 以外のときは、出力の「最後の失敗」の行（`daemon.log` の最後の `失敗 [code]: …`。値は伏せてある）もそのまま伝える。それが `invalidConfig`（`repoRoot` などが、ない・実パスでない・git のリポジトリでない）なら、起動のたびに落ち続けているので、`stop` で止めてから、設定を直す（または `/touryou:setup` をやり直す）よう案内する（自分で `config.json` を書き換えない）。読み込まれていないときは、**出力のその行の括弧の中で分ける**（`touryou launchd status` が、LaunchAgents の plist の有無で、どちらか 1 つだけを出す。両方を並べて利用者に尋ねない）。**読み込まれていないときは、`restart` を案内しない**（読み込まれていないと使えない）。
   - 「（常駐にしていない）」: 常駐の登録は `/setup` の手順 3-A の役目なので、そう伝えて終わる（ここで `apply` を尋ねない）。
   - 「（stop で止めた後）」: 次のログインでまた動く、と伝え、**続けて、その場で**次の定型文（再開）で尋ね、**はっきり「はい」のときだけ** `"$HOME/.touryou/current/bin/touryou" launchd apply --yes`。それ以外は、何もせずに終わる。
   定型文（再開）: 「止めている daemon を、いま読み込み直して動かします（常駐の設定はそのまま）。よいですか（はい／いいえ）」

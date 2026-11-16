@@ -41,11 +41,20 @@ macOS（arm64）で、`touryou-daemon` を、ログイン時に自動で動か�
 
 - `--path-prefix`: plist の `PATH` の先頭に足すディレクトリ（コロン区切りの絶対パス。Homebrew の `git` を使うときなど）。既定の `PATH` は `/usr/bin:/bin:/usr/sbin:/sbin`。
 
+### 設定の検査（`init`・`apply` の前）
+
+`init` と `apply` は、何かを書く・置く・`launchctl` を呼ぶ前に、`config.json` を **daemon と同じ検査**にかけます（`<H>/.touryou/current/bin/touryou-daemon --check-config --config <H>/.touryou/config.json`。daemon は起動せず、窓口・`state` に触れません）。
+
+- 中身: 設定の読み込み（daemon の起動と同じ検査）と、`repoRoot`・`worktreeRoot` が実在する実パス（リンクを解決したもの）であること・`rootCwd` が `repoRoot` の配下に実在すること・`repoRoot` が git のリポジトリであること。
+- 通らなければ、**何も生成せず・plist を置かず・`launchctl` を呼ばずに**、終了コード 1 で止まります。理由（daemon の `失敗 [code]: …` と「次の操作」）と直し方を出します。**値（パス）は `<パス>` に伏せます**。
+- 例: 前の日に消したフォルダを `repoRoot` が指したまま常駐にすると、daemon は起動のたびに `invalidConfig` で落ち、`KeepAlive` で起こし直され続けます。これを、常駐にする前に止めます。直したら（`config.json` の値を、今ある git のリポジトリ・フォルダの実パスにする。`/setup` のやり直しでもよい）、もう一度実行します。
+
 ## 2. plist の中身
 
 - `ProgramArguments`: `run-daemon.sh` だけ。`WorkingDirectory`: `<H>/.touryou`。
 - `EnvironmentVariables`: `PATH` だけ（daemon は `git` を使うので、`git` のある場所を含める）。
 - `RunAtLoad`: true。`KeepAlive`: `SuccessfulExit` が false（異常終了したときだけ、起動し直す）。`ThrottleInterval`: 30 秒。`Umask`: 077。
+  - 設定の誤りでも、異常終了なので起こし直されます（30 秒ごと）。`KeepAlive` は変えず（ふつうの落ちたときの起こし直しを残す）、設定の誤りは、上の「設定の検査」で常駐にする前に止め、起きてしまったときは `status` の「最後の失敗」で理由を見せます。
 - `StandardOutPath`・`StandardErrorPath`: `<H>/.touryou/logs/daemon.log`。
 
 ## 3. 読み込む・操作する（`touryou launchd …`）
@@ -53,7 +62,7 @@ macOS（arm64）で、`touryou-daemon` を、ログイン時に自動で動か�
 | 操作 | コマンド | すること |
 |:--|:--|:--|
 | 常駐にする | `touryou launchd apply --yes` | plist を `<H>/Library/LaunchAgents` に置き、`launchctl bootstrap`、窓口の応答（未認証の whoami が 401）を約 60 秒まで待つ |
-| 状態を見る | `touryou launchd status` | `launchctl print` の state・pid・last exit code と、窓口の応答 |
+| 状態を見る | `touryou launchd status` | `launchctl print` の state・pid・last exit code と、窓口の応答。last exit code が 0 以外なら、`daemon.log`（plist の `StandardErrorPath`）の最後の失敗の行（`失敗 [code]: …`。値は `<パス>` に伏せ、200 字で切る） |
 | 起動し直す | `touryou launchd restart` | `launchctl kickstart -k`（版を上げたあと） |
 | 止める | `touryou launchd stop` | `launchctl bootout`（plist は残るので、次のログインでまた動く） |
 | 外す | `touryou launchd uninstall --yes` | 止めてから、TouRyou が生成したと判定できる plist・起動スクリプトだけを消す（`logs`・`state` は残す） |
@@ -76,6 +85,7 @@ daemon は、JSON の行を標準エラー（→ `<H>/.touryou/logs/daemon.log`�
 |:--|:--|:--|
 | `last exit code` が 0 以外。ログに `library load disallowed by system policy` が、約 1 分後に出て、再起動を繰り返す | 配布物に quarantine が付いている（ブラウザなどで取得した） | `/setup` の「起動に失敗したとき」のとおり、取り直す |
 | ログに `storeLocked`、または `savedPortUnavailable` | 端末で動かした daemon が残っている（同じ `stateDir`・同じポート）。または、別のものがそのポートを使っている | 端末の daemon を止める。それでもだめなら、ログの案内のとおり |
+| `status` の最後の失敗が `invalidConfig`（`repoRoot` などが実パスでない・ない・git のリポジトリでない） | `config.json` が、消した・動かしたフォルダを指している | `touryou launchd stop` → `config.json` を直す（または `/setup` のやり直し）→ `apply --yes`（設定の検査が通ってから読み込む） |
 | 30 秒ごとに再起動を繰り返す | 起動の失敗が続いている（`ThrottleInterval`） | ログの最初のエラーを読む。直るまで、`touryou launchd stop` で止める |
 | `git` が見つからない | plist の `PATH` に、`git` の場所がない | `uninstall --yes` → `init --path-prefix …` → `apply --yes` |
 | 子の作成・回収が、git の失敗で止まる（ログに「git（Xcode Command Line Tools）が使えません」、または Xcode のライセンスの文面） | Command Line Tools がない（仮の git）、または Xcode のライセンスに未同意 | `xcode-select --install`、またはライセンスへの同意（`sudo xcodebuild -license`）。直したら、daemon を起動し直す |

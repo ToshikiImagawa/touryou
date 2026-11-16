@@ -17,15 +17,20 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   type Stats,
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { CommandResult } from "./commands.js";
+import type { RunResult } from "./launchd.js";
 import {
+  type ConfigChecker,
+  configProblem,
   DEFAULT_PATH,
   labelOf,
+  maskValues,
   plainPath,
   plistText,
   REVERSE_DOMAIN,
@@ -33,16 +38,14 @@ import {
   stateDirOf,
 } from "./launchd.js";
 
-export interface RunResult {
-  readonly status: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+export type { RunResult } from "./launchd.js";
 
 export interface LaunchdServiceDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** 外部コマンド（launchctl だけ）を実行する。 */
   readonly run: (cmd: string, args: readonly string[]) => RunResult;
+  /** apply の前の、設定の検査（`touryou-daemon --check-config`）を実行する。 */
+  readonly checkConfig: ConfigChecker;
   readonly uid: () => number;
   /** `http://127.0.0.1:<port>/v1/whoami` の HTTP の状態コード。届かなければ undefined。 */
   readonly probe: (port: number) => Promise<number | undefined>;
@@ -153,6 +156,39 @@ async function waitDaemon(ctx: Ctx): Promise<boolean> {
   }
 }
 
+/** ログの末尾で読む大きさ（バイト）。 */
+const LOG_TAIL_BYTES = 64 * 1024;
+
+/**
+ * ログ（plist の StandardErrorPath）の末尾から、最後の失敗の行（daemon の `失敗 [code]: …`）を、値を伏せて返す。
+ * 読めない・ないなら undefined。リンクは辿らない。
+ */
+function lastFailure(log: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(log, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const st = fstatSync(fd);
+    if (!st.isFile()) return undefined;
+    const len = Math.min(st.size, LOG_TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, st.size - len);
+    const line = buf
+      .toString("utf8")
+      .split("\n")
+      .filter(
+        (l) =>
+          /^失敗 \[[A-Za-z]+\]/.test(l) ||
+          /"event":"(uncaughtException|unhandledRejection)"/.test(l),
+      )
+      .at(-1);
+    return line === undefined ? undefined : maskValues(line);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 async function statusLines(ctx: Ctx): Promise<{ lines: string[]; ok: boolean }> {
   const lines: string[] = [];
   let ok = true;
@@ -170,6 +206,15 @@ async function statusLines(ctx: Ctx): Promise<{ lines: string[]; ok: boolean }> 
     if (i.lastExit !== undefined) parts.push(`last exit code=${i.lastExit}`);
     lines.push(`${u.label}: 読み込み済み（${parts.join("・")}）`);
     if (i.state !== "running") ok = false;
+    const exit = i.lastExit === undefined ? Number.NaN : Number.parseInt(i.lastExit, 10);
+    if (Number.isInteger(exit) && exit !== 0) {
+      const last = lastFailure(u.log);
+      lines.push(
+        last === undefined
+          ? `  最後の失敗: ログ（${u.log}）に、失敗の行がない`
+          : `  最後の失敗（ログ ${u.log}。値は伏せた）: ${last}`,
+      );
+    }
   }
   if (loadedCount === 0) {
     // 止めた後に restart を案内されないように、戻し方をここで出す（restart は読み込まれていないと使えない）
@@ -219,6 +264,9 @@ const isGeneratedScript = (ctx: Ctx, _u: Unit, text: string): boolean =>
 const isRegular = (p: string): boolean => lstatOr(p)?.isFile() === true;
 
 async function apply(ctx: Ctx): Promise<CommandResult> {
+  // 通らない設定で常駐にすると、KeepAlive で起こし直され、起動のたびに落ち続ける。plist を置く前・launchctl の前に止める
+  const problem = configProblem(ctx.base, ctx.deps.checkConfig);
+  if (problem !== undefined) return fail(problem, 1);
   const missing = ctx.units.flatMap((u) => [u.plistSrc, u.script]).filter((p) => !isRegular(p));
   if (missing.length > 0) {
     return fail(

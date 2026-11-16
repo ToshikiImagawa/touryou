@@ -188,3 +188,9 @@ category: "developer-tooling"
 - **Decision**: `plugin/scripts/*.sh` の変数の展開は、すべて `${名前}` の形で書く（`$1`・`$?`・`$$`・`$#`・`$@` は除く）。`scripts/plugin-check.mjs` が、`plugin/` の中の `.sh` の `$名前` を拒み（shell でない言語の `$` の行だけ `# plugin-check: allow-dollar` で外す）、`$名前` のすぐあとに ASCII でない文字があるものは、`plugin/` とリポジトリの `scripts/*.sh` のどちらでも、印があっても拒む。試験は UTF-8 のロケールの組でも script を走らせる。
 - **Rationale**: macOS の bash 3.2 は UTF-8 のロケールで、`$ver）` の全角の文字の 1 バイト目を名前の一部として読み、`set -u` の script が止まる（#47）。日本語の文を出す script ではほぼどこでも起きうるので、一部だけを直すのでなく、書き方を 1 つにそろえて機械で検査するほうが、見落としがない。
 - **Rejected alternatives**: script の頭で `LC_ALL=C` にする — 出す日本語の文や、呼ぶコマンドのロケールまで変わり、書き方の罠も残ったままで、別の script で同じことが起きる。shellcheck で検査する — この形（名前のすぐあとの ASCII でない文字）を見ないうえ、CI と手元に新しい依存が増える。
+
+## 2026-11-16 常駐の登録の前に、daemon の --check-config で設定を検査する
+
+- **Decision**: `touryou launchd init`・`apply` は、書く・置く・`launchctl` を呼ぶ前に、`<base>/current/bin/touryou-daemon --check-config --config <base>/config.json` を実行し、終了コードが 0 でなければ何もせずに止まる。`--check-config` は daemon の `main` に足した、起動しない道で、起動と同じ `loadConfigFile` と git の口の作成（`createGitPorts` の実パスの検査）に、repoRoot が git のリポジトリか（`checkGitRepo`。`git rev-parse --git-dir`）を足したもの。CLI は、出力のパスを `<パス>` に伏せて出す。`launchd status` は、last exit code が 0 以外なら、`daemon.log` の最後の `失敗 [code]: …` の行を、伏せて長さを切って出す。plist の `KeepAlive`（`SuccessfulExit` が false）は変えない。
+- **Rationale**: 消したフォルダを指した設定で常駐にすると、daemon は起動のたびに `invalidConfig` で落ち、KeepAlive で起こし直され続け、`status` には理由が出なかった（#65）。検査を daemon の入口に置けば、CLI に daemon（better-sqlite3 を含む）の依存を足さずに、daemon と同じ関数で検査でき、同じ `current` の版の検査になる（だぶった実装を作らない）。KeepAlive を変えると、ふつうの落ちたときの起こし直しまでなくなるので、変えずに、登録の前の検査と `status` の理由の表示で扱う。
+- **Rejected alternatives**: CLI に `@touryou/daemon` の依存を足して関数を直に呼ぶ — 人間用のコマンドに、ネイティブのモジュールを持つ daemon を引き込む。CLI に実パスの検査を書き直す — daemon の検査とずれうる。`KeepAlive` を `false` にする・`SuccessfulExit` を外す — 設定の誤り以外で落ちたときに、起こし直されなくなる。daemon が設定の誤りで終了コード 0 を返して起こし直しを止める — 失敗が `status` から見えなくなり、`SuccessfulExit` の意味とも合わない。

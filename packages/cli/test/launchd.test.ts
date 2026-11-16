@@ -37,6 +37,12 @@ function makeHome(): { home: string; base: string; state: string } {
   const state = join(base, "state");
   mkdirSync(state, { recursive: true });
   mkdirSync(join(base, "current", "bin"), { recursive: true });
+  // daemon の設定の検査の偽物（bin に fail があれば、その中身を標準エラーに出して終了コード 1）
+  writeFileSync(
+    join(base, "current", "bin", "touryou-daemon"),
+    '#!/bin/sh\nf="$(dirname "$0")/fail"\nif [ -f "$f" ]; then cat "$f" >&2; exit 1; fi\nexit 0\n',
+    { mode: 0o755 },
+  );
   writeFileSync(join(base, "config.json"), JSON.stringify({ stateDir: state }), { mode: 0o600 });
   return { home, base, state };
 }
@@ -77,6 +83,32 @@ describe("引数・前提", () => {
       isTTY: { stdin: false, stdout: false },
     });
     expect(bad.exitCode).toBe(2);
+  });
+});
+
+describe("設定の検査（daemon の --check-config）", () => {
+  it("設定が通らなければ、何も生成せずに終了コード 1。理由と直し方を出し、値（パス）は伏せる", async () => {
+    const { home, base } = makeHome();
+    writeFileSync(
+      join(base, "current", "bin", "fail"),
+      `失敗 [invalidConfig]: repoRoot ${home}/gone が、実パスでない（存在しない、またはリンクを含む）\n次の操作:\n  - repoRoot を、リンクを解決した実パスで指定する\n`,
+    );
+    const r = await run(home, ["init", "--org", ORG]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/daemon の設定の検査を通らない/);
+    expect(r.stderr).toMatch(/invalidConfig/);
+    expect(r.stderr).toMatch(/直し方/);
+    expect(r.stderr).not.toContain(home);
+    expect(existsSync(join(base, "launchd"))).toBe(false);
+    expect(existsSync(join(base, "bin"))).toBe(false);
+  });
+
+  it("daemon の入口を実行できなければ、止める", async () => {
+    const { home, base } = makeHome();
+    rmSync(join(base, "current", "bin", "touryou-daemon"));
+    const r = await run(home, ["init", "--org", ORG]);
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(join(base, "launchd"))).toBe(false);
   });
 });
 

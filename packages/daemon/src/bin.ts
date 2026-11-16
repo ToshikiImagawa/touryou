@@ -48,6 +48,8 @@ const result = await main(process.argv.slice(2), {
     fatalStop?.();
   },
   loadWorktreePorts,
+  // git の口と同じく、使うときに読み込む
+  checkRepo: async (repoRoot) => (await import("./git-ports.js")).checkGitRepo(repoRoot),
   stdout: (t) => process.stdout.write(t),
   stderr: (t) => process.stderr.write(t),
 });
