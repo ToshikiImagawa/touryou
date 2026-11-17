@@ -25,7 +25,7 @@ export const UI_HTML = `<!doctype html>
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
-<header class="top"><h1>touryou 状態画面</h1><span id="status" class="status">未接続</span><span class="tools"><button id="still" class="quiet sm" type="button">動きを止める</button></span></header>
+<p id="live" class="sr" aria-live="polite"></p><header class="top"><h1>touryou 状態画面</h1><span id="status" class="status">未接続</span><span class="tools"><button id="still" class="quiet sm" type="button">動きを止める</button></span></header>
 <main>
 <section id="auth" hidden>
 <h2>人間のトークン</h2>
@@ -74,6 +74,16 @@ button.quiet{background:transparent}
 button.sm{font-size:12.5px;padding:2px 10px}
 button.danger{border-color:var(--shu);color:var(--shu);background:transparent}
 button.done{background:var(--matsu);border-color:var(--matsu);color:var(--on-strong)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;margin:-1px;padding:0;border:0}
+button.copy{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:34px;padding:4px 10px}
+.copy-ico{position:relative;display:inline-block;width:14px;height:14px}
+.copy-ico::before,.copy-ico::after{content:"";position:absolute;width:9px;height:10px;border:1.6px solid currentColor;border-radius:2px;box-sizing:border-box}
+.copy-ico::before{left:0;top:4px}
+.copy-ico::after{left:5px;top:0;background:var(--sheet)}
+button.copy:hover .copy-ico::after{background:var(--sheet)}
+button.copy.done .copy-ico::after{display:none}
+button.copy.done .copy-ico::before{content:"✓";border:0;width:14px;height:14px;left:0;top:-2px;font-size:14px;line-height:14px;font-weight:800;text-align:center}
+button.copy.failed{border-color:var(--shu);color:var(--shu)}
 code{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:13.5px;word-break:break-all}
 .now{margin:24px 0 8px;display:grid;grid-template-columns:auto 1fr;gap:2px 18px;align-items:end}
 .now .count{grid-row:span 2;font-size:56px;line-height:1;font-weight:800;color:var(--kaki);min-width:1.2ch;text-align:center;font-variant-numeric:tabular-nums}
@@ -93,19 +103,21 @@ code{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:13.5px;word
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;align-items:start}
 .cards .card{margin:0;display:grid;gap:6px;scroll-margin-top:16px}
 .card.turn{border-color:var(--kaki);border-left:5px solid var(--kaki)}.card.turn.stall{border-color:var(--kiiro);border-left-color:var(--kiiro)}.card.finished{opacity:.8}
-.card.flash{animation:flash 1.6s ease-out}
+.card.picked{outline:3px solid var(--ai);outline-offset:2px}.card.picked:focus{outline:3px solid var(--ai)}
+.card.picked.pa{animation:pickA 1.5s ease-out}.card.picked.pb{animation:pickB 1.5s ease-out}
 .ctitle,.card h3{font-weight:700;font-size:15.5px;line-height:1.5;margin:0}
 .card.need{border-color:var(--kaki)}
 .spark{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;align-items:end;height:34px;border-bottom:1px solid var(--line);padding:0 2px}
 .spark .slot{display:flex;align-items:end;justify-content:center;gap:2px;height:100%}
 .spark .bar{width:7px;border-radius:2px 2px 0 0;background:var(--ai);transform-origin:bottom;animation:grow .7s cubic-bezier(.2,.9,.3,1.2) both}
-.spark .bar.h{background:var(--kaki)}.spark .bar.l1{height:35%}.spark .bar.l2{height:55%}.spark .bar.l3{height:75%}.spark .bar.l4{height:95%}
+.spark .bar.h{background:var(--kaki)}.spark .bar.l1{height:56%}.spark .bar.l2{height:70%}.spark .bar.l3{height:85%}.spark .bar.l4{height:100%}
 .flowlist{display:grid;gap:4px;font-size:13.5px}
 .flowlist .fl{display:grid;grid-template-columns:20px 1fr auto;gap:6px;align-items:start}
 .flowlist .ar{font-weight:800;text-align:center}.flowlist .ar.u{color:var(--ai)}.flowlist .ar.d{color:var(--ai-2)}.flowlist .ar.h{color:var(--kaki)}
 .flowlist .t{color:var(--muted);font-size:12px;white-space:nowrap}
+.flowlist .fbody{min-width:0;overflow-wrap:anywhere}.flowlist details.fbody>p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
 @keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
-.meta{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12.5px;color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12.5px;color:var(--muted)}.meta>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .idline{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .chip{display:inline-block;font-size:12px;font-weight:700;padding:0 8px;border-radius:999px;line-height:1.8;margin-right:4px;background:var(--grid);color:var(--muted)}
 .chip.turn{background:var(--kaki-soft);color:var(--kaki)}.chip.stall{background:var(--kiiro-soft);color:var(--kiiro)}.chip.failed,.chip.blocking{background:var(--shu-soft);color:var(--shu)}
@@ -145,7 +157,8 @@ form{display:flex;gap:8px;flex-wrap:wrap}input{flex:1;min-width:200px}
 @keyframes bump-a{0%{transform:scale(.6)}100%{transform:scale(1)}}
 @keyframes bump-b{0%{transform:scale(.6)}100%{transform:scale(1)}}
 @keyframes arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@keyframes flash{0%{box-shadow:0 0 0 0 var(--kaki)}30%{box-shadow:0 0 0 6px var(--kaki-soft)}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes pickA{0%{box-shadow:0 0 0 0 var(--ai)}35%{box-shadow:0 0 0 8px var(--ai-3)}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes pickB{0%{box-shadow:0 0 0 0 var(--ai)}35%{box-shadow:0 0 0 8px var(--ai-3)}100%{box-shadow:0 0 0 0 transparent}}
 @keyframes open{from{opacity:0;transform:translateY(-4px)}}
 .seg{display:inline-flex;gap:4px;margin:0 0 8px}.seg button[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .board{position:relative;height:420px;min-height:180px;max-height:720px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--sheet);user-select:none;-webkit-user-select:none;touch-action:none}
@@ -635,10 +648,27 @@ export const UI_JS = `'use strict';
     return card;
   }
   // 写すボタン。写せないとき（クリップボードが使えない）は、そう言う（文字は欄にあるので、手で選べる）
+  // 写すボタン（クリップボードのアイコン。四角が 2 つずれて重なった形を CSS で描く。文字は出さず、名前は aria-label と title）。
+  // 押したら、済みの形（✓）にして、読み上げにも伝える（#live。aria-live）。数秒で元に戻す
+  var COPY_BACK_MS = 2500;
+  function announce(msg) {
+    var live = document.getElementById('live');
+    live.textContent = '';
+    live.textContent = msg;
+  }
   function copyButton(text) {
-    var b = el('button', 'sm', '写す');
+    var b = el('button', 'sm copy');
+    b.appendChild(el('span', 'copy-ico'));
+    var name = function (label, cls) { b.ariaLabel = label; b.title = label; b.className = cls; };
+    name('写す', 'sm copy');
+    var back = null;
     b.addEventListener('click', function () {
-      var said = function (ok) { b.textContent = ok ? '写しました' : '写せません（文字を選んでコピーしてください）'; b.className = ok ? 'sm done' : 'sm'; };
+      var said = function (ok) {
+        name(ok ? '写しました' : '写せません（文字を選んでコピーしてください）', ok ? 'sm copy done' : 'sm copy failed');
+        announce(ok ? '写しました' : '写せません。文字を選んでコピーしてください');
+        if (back !== null) window.clearTimeout(back);
+        back = window.setTimeout(function () { back = null; name('写す', 'sm copy'); }, COPY_BACK_MS);
+      };
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { said(true); }, function () { said(false); });
       else said(false);
     });
@@ -778,8 +808,8 @@ export const UI_JS = `'use strict';
     for (var j = 0; j < SPARK_SLOTS; j += 1) {
       var cell = el('div', 'slot');
       if (plain[j] > 0) cell.appendChild(el('span', 'bar l' + Math.min(4, plain[j])));
-      // 答え待ちは、同じ数でも 1 段高くする（あなたの出番を目立たせるため。数と高さは 1 段ずれる）
-      if (waits[j] > 0) cell.appendChild(el('span', 'bar h l' + Math.min(4, waits[j] + 1)));
+      // 答え待ちは、同じ数でも 2 段高くする（見本の高さ: 普通 19・答え待ち 29（34 の中）。あなたの出番を目立たせるため）
+      if (waits[j] > 0) cell.appendChild(el('span', 'bar h l' + Math.min(4, waits[j] + 2)));
       box.appendChild(cell);
     }
     return box;
@@ -794,7 +824,7 @@ export const UI_JS = `'use strict';
     var st = cardStatus.get(n.id);
     var status = st ? st.status : band === 'finished' ? 'done' : 'run';
     var stall = status === 'stall';
-    var card = el('div', 'card ' + band + (n.needsHuman > 0 ? ' need' : '') + (stall ? ' stall' : ''));
+    var card = el('div', 'card ' + band + (n.needsHuman > 0 ? ' need' : '') + (stall ? ' stall' : '') + pickedClass(n.id));
     if (ID_RE.test(n.id)) card.id = 'card-' + n.id;
     // 頭の札: 状態の札 1 つと、答えがあれば「あなたの答え N 件」
     var head = el('div', '');
@@ -804,7 +834,7 @@ export const UI_JS = `'use strict';
     card.appendChild(el('h3', '', nodeLabel(n, 200)));
     var meta = el('div', 'meta');
     var parent = n.parentId === null ? null : byId.get(n.parentId);
-    meta.appendChild(el('span', '', name(ROLE_NAMES, n.role) + (n.parentId === null ? '（いちばん上）' : '（親：' + (parent ? nodeLabel(parent, 24) : n.parentId) + '）')));
+    meta.appendChild(el('span', '', name(ROLE_NAMES, n.role) + (n.parentId === null ? '（いちばん上）' : '（親：' + (parent ? nodeLabel(parent, 13) : n.parentId) + '）')));
     // 最後の動き。表示モデルに時刻がない（いちばん上の統合が、指示を出しただけ など）ときは、その子のいちばん新しいやり取りの時刻
     var last = n.lastActivityAt || latestFlowAt(n.id, flows);
     if (last) meta.appendChild(el('span', 'when', '最後の動き ' + timeText(last, Date.now())));
@@ -837,14 +867,25 @@ export const UI_JS = `'use strict';
   }
   // 答え待ちのやり取り（判断・範囲の頼みで、まだ済んでいないもの）だけ、柿色にする
   function isAwaiting(f) { return f.stage !== 'done' && (f.kind === 'decision' || f.kind === 'extension'); }
+  // やり取りの短い本文が、この字数までなら 1 行に続けて出す（見本の flowlist）。長ければ、たたむ
+  var FLOW_INLINE_MAX = 18;
   function flowLine(f, selfId, byId) {
     var up = f.dir === 'up';
     var other = f.from === selfId ? f.to : f.from;
-    // 人とのやり取りは「あなた」（画面のほかの所の「あなたの答え」「あなたの出番」とそろえる）
-    var who = other === 'human' ? 'あなた' : byId.has(other) ? nodeLabel(byId.get(other), 16) : other;
+    // 人とのやり取りは「あなた」（画面のほかの所の「あなたの答え」「あなたの出番」とそろえる）。相手の題は 10 字で切る（見本の short(題, 10)）
+    var who = other === 'human' ? 'あなた' : byId.has(other) ? nodeLabel(byId.get(other), 11) : other;
     var line = el('div', 'fl');
     line.appendChild(el('span', 'ar ' + (isAwaiting(f) ? 'h' : up ? 'u' : 'd'), up ? '↑' : '↓'));
-    line.appendChild(el('span', '', (f.from === selfId ? '→ ' : '← ') + who + '　' + name(FLOW_KIND_NAMES, f.kind)));
+    var sum = (f.from === selfId ? '→ ' : '← ') + who + '　' + name(FLOW_KIND_NAMES, f.kind);
+    var text = typeof f.text === 'string' ? cleanText(f.text, 400) : '';
+    if (text && Array.from(text).length > FLOW_INLINE_MAX) {
+      var d = el('details', 'fbody');
+      d.appendChild(el('summary', '', sum));
+      d.appendChild(el('p', '', text));
+      line.appendChild(d);
+    } else {
+      line.appendChild(el('span', 'fbody', text ? sum + '：' + text : sum));
+    }
     line.appendChild(el('span', 't', clockText(f.sentAt)));
     return line;
   }
@@ -1043,13 +1084,37 @@ export const UI_JS = `'use strict';
     return seen.size;
   }
   // 一覧の「詳しく」: その子のカードまで動かして、光らせる（終わった作業なら、たたんだ欄を開く）
+  // 移った先のカードを、1.5 秒、藍の縁で光らせる（どのカードに移ったか分かるように）。同じ子を続けて押したら、はじめから。
+  // 光らせている途中にカードを作り直しても、残りの時間は縁を付けたままにする（子の ID と終わりの時刻を覚えておく）。
+  // 動きを止める・OS の「視差効果を減らす」では、動きなしで縁の色だけを出す（CSS の animation:none）
+  var PICK_MS = 1500;
+  var pickId = '';
+  var pickUntil = 0;
+  var pickTimer = null;
+  var pickFlip = false;
+  function pickedClass(id) {
+    return pickId === id && Date.now() < pickUntil ? ' picked' : '';
+  }
   function openCard(id) {
     var c = document.getElementById('card-' + id);
     if (!c) return;
     if (c.parentNode && c.parentNode.id === 'finished-cards') document.getElementById('finished').open = true;
     c.scrollIntoView({ block: 'center' });
-    c.className = c.className.replace(' flash', '');
-    window.setTimeout(function () { c.className += ' flash'; }, 0);
+    pickId = id;
+    pickUntil = Date.now() + PICK_MS;
+    pickFlip = !pickFlip;
+    // 動きのクラスを入れ替えて、続けて押したときも、はじめから動かす
+    c.className = c.className.replace(/ picked( pa| pb)?/g, '') + ' picked ' + (pickFlip ? 'pa' : 'pb');
+    if (pickTimer !== null) window.clearTimeout(pickTimer);
+    pickTimer = window.setTimeout(function () {
+      pickTimer = null;
+      pickId = '';
+      var now = document.getElementById('card-' + id);
+      if (now) now.className = now.className.replace(/ picked( pa| pb)?/g, '');
+    }, PICK_MS);
+    // キーボード・読み上げのために、移った先へ focus も移す（ページは動かさない。上の scrollIntoView で見せてある）
+    c.tabIndex = -1;
+    c.focus({ preventScroll: true });
   }
 
   // ---- 回収の指示（人間による破棄の判断。取り消せない）----
@@ -1566,7 +1631,15 @@ export const UI_JS = `'use strict';
     nextSeen = new Set();
     renderTodo(v, byId);
     cardStatus = statusesOf(v);
+    // カードは描き直しのたびに作り直すので、focus がカードにあったら、作り直したあとの同じ子のカードへ戻す
+    // （移った先を、キーボード・読み上げの人が見失わないように）。入力欄など、ほかに focus があるときは触らない
+    var act = document.activeElement;
+    var focusedCard = act && typeof act.id === 'string' && /^card-/.test(act.id) ? act.id : '';
     renderCards(v, byId);
+    if (focusedCard) {
+      var again = document.getElementById(focusedCard);
+      if (again) { again.tabIndex = -1; again.focus({ preventScroll: true }); }
+    }
     var drawn = renderList(v);
     graphView = v;
     renderGraph(v, view.lastSeq);

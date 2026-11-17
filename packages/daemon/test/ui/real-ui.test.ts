@@ -43,6 +43,8 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
   let page: Page;
   let url = "";
   const problems: string[] = [];
+  // いまの状態（試験の途中で lastSeq を進めて、描き直させる）
+  let current: typeof state;
   const state = (() => {
     const r = foldEvents([
       ...created("root", "integrator", null, "状態画面の作り直しをまとめる"),
@@ -50,6 +52,16 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
       ...created("ui-b", "review", "root", "関係図のレビュー"),
       ...created("ui-c", "implement", "root", "一覧の見せ方を直す"),
       ev({ type: "node.instructed", payload: { nodeId: "ui-a", text: "x" } }, { nodeId: "root" }),
+      // 長い進み具合の報告（カードのやり取りでは、たたむ）
+      ev({
+        type: "report.added",
+        payload: {
+          reportId: "rp1",
+          nodeId: "ui-a",
+          kind: "progress",
+          text: "関係図の箱を見本の形にそろえ、線の色と玉の動きを確かめているところです",
+        },
+      }),
       // 人からの指示（人の箱は描かない。親 root から子への下りの線で表す）
       ev({ type: "node.instructed", payload: { nodeId: "ui-c", text: "x" } }),
       // 人から子への、範囲の頼みの却下（札は「指示」でなく「却下」。#115）と、範囲の頼みの知らせ（内部の言葉を言い換える）
@@ -110,6 +122,7 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
     if (!r.ok) throw new Error(r.error.cause);
     return r.value;
   })();
+  current = state;
   const ticket = async (): Promise<string> => {
     const res = await fetch(`${url}/v1/ui/ticket`, {
       method: "POST",
@@ -129,7 +142,7 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
   beforeAll(async () => {
     server = createApiServer({
       credentials: createCredentialStore({ humanToken: HUMAN }),
-      getState: () => state,
+      getState: () => current,
       handlers: {},
     });
     url = (await server.listen(0)).url;
@@ -288,6 +301,75 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
     expect(pairs.find((p) => p.id === "ui-d")?.card).not.toBe("● あなたの答え待ち");
   });
 
+  it("カードの meta は 1 行、親の題は 12 字、やり取りの相手の題は 10 字で切る。短い文は 1 行、長い文はたたむ", async () => {
+    const c = await page.evaluate(() => {
+      const card = (id: string) => document.getElementById(`card-${id}`);
+      const meta = card("ui-b")?.querySelector(".meta") as HTMLElement | null;
+      const spans = [...(meta?.children ?? [])] as HTMLElement[];
+      const a = card("ui-a");
+      return {
+        metaText: meta?.textContent ?? "",
+        // 見本の .meta と同じく、flex で並べ、足りなければ折り返す。それぞれの欄は、中で折れない（1 行の高さ）
+        oneLine:
+          spans.length === 2 &&
+          spans.every(
+            (x) =>
+              x.getBoundingClientRect().height <
+              1.5 * (Number.parseFloat(getComputedStyle(x).lineHeight) || 18),
+          ),
+        bLines: [...(card("ui-b")?.querySelectorAll(".flowlist .fl") ?? [])].map(
+          (x) => x.textContent ?? "",
+        ),
+        aFolded: [...(a?.querySelectorAll(".flowlist details.fbody > summary") ?? [])].map(
+          (x) => x.textContent ?? "",
+        ),
+        aBody: a?.querySelector(".flowlist details.fbody > p")?.textContent ?? "",
+      };
+    });
+    expect(c.metaText).toContain("（親：状態画面の作り直しをまと…）");
+    expect(c.oneLine).toBe(true);
+    expect(
+      c.bLines.some((t) => t.includes("→ 状態画面の作り直しを…　判断を求む：どちらにしますか")),
+    ).toBe(true);
+    expect(c.aFolded.some((t) => t.startsWith("→ 状態画面の作り直しを…　報告"))).toBe(true);
+    expect(c.aBody).toContain("関係図の箱を見本の形にそろえ");
+  });
+
+  it("「写す」はクリップボードのアイコン。名前（aria-label・title）が付き、押すと済みの形になって読み上げにも伝え、数秒で戻る", async () => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
+    const named = await page.evaluate(() =>
+      [...document.querySelectorAll("button.copy")].map((b) => ({
+        label: b.getAttribute("aria-label"),
+        title: b.getAttribute("title"),
+        text: b.textContent ?? "",
+        icon: b.querySelector(".copy-ico") !== null,
+        h: b.getBoundingClientRect().height,
+      })),
+    );
+    expect(named.length).toBeGreaterThan(0);
+    for (const b of named) {
+      expect(b).toMatchObject({ label: "写す", title: "写す", text: "", icon: true });
+      expect(b.h).toBeGreaterThanOrEqual(34);
+    }
+    await page.click(`#card-${LONG} .cmd button.copy`);
+    await page.waitForFunction(() => document.querySelector(".cmd button.copy.done") !== null);
+    const after = await page.evaluate(() => ({
+      label: document.querySelector(".cmd button.copy.done")?.getAttribute("aria-label"),
+      live: document.getElementById("live")?.textContent,
+    }));
+    expect(after).toEqual({ label: "写しました", live: "写しました" });
+    await page.waitForFunction(
+      () => document.querySelector(".cmd button.copy.done") === null,
+      undefined,
+      { timeout: 6000 },
+    );
+    expect(
+      await page.evaluate(() =>
+        document.querySelector(".cmd button.copy")?.getAttribute("aria-label"),
+      ),
+    ).toBe("写す");
+  });
+
   it("箱は見本の形：状態の言葉と印・左の縁の段・役割の印・列の見出し。止まっているかもは、くすんだ黄（カードも）", async () => {
     const box = (id: string) => page.locator(`#graph .gnode[data-id="${id}"]`);
     expect(await box("root").getAttribute("class")).toContain("t-go");
@@ -320,11 +402,63 @@ describe.skipIf(pw === null)("本物の /ui（Playwright。CSP の下で関係�
   it("箱を押すと、その子のカードへ移って光る（一覧の「詳しく」と同じ）。凡例は図のときだけ出る", async () => {
     expect(await page.evaluate(() => document.getElementById("graph-legend")?.hidden)).toBe(false);
     await page.click('#graph .gnode[data-id="ui-c"]');
-    await page.waitForSelector("#card-ui-c.flash"); // 光らせるのは次の番（setTimeout 0）
+    await page.waitForSelector("#card-ui-c.picked");
+    // 移った先のカードに focus も移る
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe("card-ui-c");
     await page.click("#show-list");
     expect(await page.evaluate(() => document.getElementById("graph-legend")?.hidden)).toBe(true);
     await page.click("#show-graph");
     await page.waitForSelector("#graph .gnode");
+  });
+
+  it("移った先のカードは 1.5 秒ほど光り、外れる。続けて押すとはじめから。光っている途中の描き直しのあとも、残りの時間は光る", async () => {
+    const has = () =>
+      page.evaluate(
+        () => document.getElementById("card-ui-b")?.classList.contains("picked") ?? false,
+      );
+    await page.click('#graph .gnode[data-id="ui-b"]');
+    await page.waitForSelector("#card-ui-b.picked");
+    const first = await page.evaluate(() => document.getElementById("card-ui-b")?.className ?? "");
+    // 続けて押すと、動きのクラスが入れ替わる（はじめから動く）
+    await page.click('#graph .gnode[data-id="ui-b"]');
+    const second = await page.evaluate(() => document.getElementById("card-ui-b")?.className ?? "");
+    expect(first.includes(" pa") !== second.includes(" pa")).toBe(true);
+    // 途中で描き直す（記録の番号を進める）→ 作り直したカードにも、残りの時間は付いている
+    await page.evaluate(() => {
+      const c = document.getElementById("card-ui-b");
+      if (c) c.dataset.old = "1";
+    });
+    current = { ...state, lastSeq: state.lastSeq + 1 };
+    await page.waitForFunction(
+      () => {
+        const c = document.getElementById("card-ui-b");
+        return c !== null && c.dataset.old === undefined;
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    expect(await has()).toBe(true);
+    // 描き直しのあとも、focus は作り直した同じ子のカードにある
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe("card-ui-b");
+    await page.waitForTimeout(1700);
+    expect(await has()).toBe(false);
+    // focus がほかの所（答えの欄）へ移っていたら、描き直しのあとにカードへ奪わない
+    await page.click("#todo textarea");
+    await page.evaluate(() => {
+      const c = document.getElementById("card-ui-b");
+      if (c) c.dataset.old = "1";
+    });
+    current = { ...state, lastSeq: state.lastSeq + 2 };
+    await page.waitForFunction(
+      () => {
+        const c = document.getElementById("card-ui-b");
+        return c !== null && c.dataset.old === undefined;
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    expect(await page.evaluate(() => /^card-/.test(document.activeElement?.id ?? ""))).toBe(false);
+    current = state;
   });
 
   it("図と一覧を切り替えられる。一覧にすると図は片付き、図に戻すと描き直す", async () => {
