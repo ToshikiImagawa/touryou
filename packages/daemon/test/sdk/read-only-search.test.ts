@@ -1,7 +1,7 @@
 import type { Scope } from "@touryou/core";
 import { describe, expect, it } from "vitest";
 import { childAllowList } from "../../src/sdk/child-permissions.js";
-import { decideToolUse } from "../../src/sdk/hook-policy.js";
+import { decideToolUse, grantedOnlyByExtension } from "../../src/sdk/hook-policy.js";
 import { isReadOnlySearch } from "../../src/sdk/read-only-search.js";
 
 /**
@@ -143,5 +143,23 @@ describe("子が持つ道具の許し（permissions.allow）", () => {
     if (!r.ok) return;
     expect(r.value.allow).toEqual(["Read(./**)", "Grep(./**)", "Glob(./**)"]);
     expect(r.value.allow.some((a) => a.startsWith("Bash("))).toBe(false);
+  });
+});
+
+describe("#91 との組み合わせ: 探すコマンドの許しと、承認済みの拡張への明示の許可", () => {
+  it("探すコマンドはフックが通すが、明示の許可は付かない。承認済みの完全一致の命令には付く", async () => {
+    const approved = "git log --oneline -5";
+    const effective: Scope = { ...scope, allowedCommands: [approved] };
+    const permit = (command: string) =>
+      grantedOnlyByExtension(scope, effective, "Bash", { command }, WT);
+    for (const c of ["find . -name x", "grep -rn x .", "git ls-files docs .sdd", "ls -la"]) {
+      expect(await allowed(c), c).toBe(true);
+      expect(permit(c), c).toBe(false);
+    }
+    expect(
+      (await decideToolUse(effective, WT, "Bash", { command: approved }, resolve, prot, WT)).allow,
+    ).toBe(true);
+    expect(permit(approved)).toBe(true);
+    expect(permit(`${approved} -p`)).toBe(false);
   });
 });

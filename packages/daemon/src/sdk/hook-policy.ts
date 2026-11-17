@@ -21,11 +21,13 @@ import { stat } from "node:fs/promises";
 import {
   CHILD_MCP_TOOL_NAMES,
   commandWords,
+  entryWords,
   evaluateScope,
   ownMcpToolOf,
   type Scope,
   type ScopeViolationReason,
 } from "@touryou/core";
+import { commandEntryProblem } from "./child-permissions.js";
 import { isReadOnlySearch } from "./read-only-search.js";
 
 /** パスの実パス化（書き込み先の判定用）。解決できなければ reject する。 */
@@ -852,4 +854,80 @@ export async function decideToolUse(
   const own = ownMcpToolOf(toolName);
   if (own !== undefined && CHILD_MCP_TOOL_NAMES.includes(own)) return ALLOW;
   return denyUnknown(toolName === "" ? "(ツール名が空)" : toolName);
+}
+
+/**
+ * 承認済みの拡張に、明示の許可（`permissionDecision: "allow"`）を返してよい Bash か（#91）。CLI の子（dontAsk）のフックが使う。
+ * 明示の許可は、Claude Code の側の確かめ（読み取りだけのコマンドの安全な旗、引用符のない glob など）を飛ばす。
+ * deny・ask の規則は、明示の許可のあとも効く（Claude Code の文書: hooks の `permissionDecision`、permissions の
+ * 「Precedence among rules, hooks, and mods」）。そのため、次のすべてを満たすときだけ真にする（前方一致のぶんは、フックだけ通し、
+ * Claude Code の判定に任せる）。
+ * - 命令を区切りで分けた各部分が、承認済みの拡張だけにある項目（ブリーフにない項目）と、語の数まで同じ（完全一致）
+ * - その項目が、起動のときの一覧と同じ規則（`commandEntryProblem`: `cd` 始まり・1 語だけ・任意のコードが動く形の禁止）を通る
+ * 書き込みの道具（Write・Edit・MultiEdit・NotebookEdit）は、対象の場所がブリーフでは断られ、有効な範囲では通るときだけ真。
+ * 禁じる場所の `Edit` の deny は、明示の許可のあとも Claude Code の側で効く。
+ * フックの判定（`decideToolUse`）で許可されたあとにだけ呼ぶ（これだけで許可を決めない）。純粋関数。
+ */
+export function grantedOnlyByExtension(
+  brief: Scope,
+  effective: Scope,
+  toolName: string,
+  toolInput: unknown,
+  cwd: string,
+): boolean {
+  const key = WRITE_TOOLS[toolName];
+  if (key !== undefined) {
+    // 書き込み: ブリーフでは断られ、有効な範囲（承認した書き込みの場所を足したもの）では通る場所。比べられなければ偽（フェイルクローズ）
+    const path = isRec(toolInput) ? toolInput[key] : undefined;
+    if (typeof path !== "string") return false;
+    return (
+      !evaluateScope(brief, cwd, { kind: "write", path }).allowed &&
+      evaluateScope(effective, cwd, { kind: "write", path }).allowed
+    );
+  }
+  if (toolName !== "Bash") return false;
+  const command = (toolInput as { command?: unknown } | null)?.command;
+  if (typeof command !== "string") return false;
+  const segments = commandWords(command)?.filter((s) => s.length > 0);
+  if (segments === undefined || segments.length === 0) return false;
+  const granted = effective.allowedCommands
+    .filter((e) => !brief.allowedCommands.includes(e))
+    // 区切り（`;`・`|` など）を含む項目は、承認した形そのものと意味が違う語の並びになるので外す
+    // 裏で動かす項目（`x &`）も、`entryWords` が空白で分けるだけの形に戻るので外す（解析した語と同じ項目だけを残す）
+    .filter((e) => {
+      const segs = commandWords(e)?.filter((s) => s.length > 0);
+      const words = entryWords(e);
+      return (
+        segs?.length === 1 &&
+        segs[0]?.length === words.length &&
+        words.every((w, i) => segs[0]?.[i] === w)
+      );
+    })
+    .map(entryWords)
+    .filter((w) => commandEntryProblem(w) === undefined);
+  return segments.every((seg) =>
+    granted.some((w) => w.length === seg.length && w.every((x, i) => seg[i] === x)),
+  );
+}
+
+/**
+ * 書き込みの道具の入力のパスを、実パスにした入力を返す（`grantedOnlyByExtension` で、実パスの作業ツリーと比べるため。#91）。
+ * 相対パスは `toolCwd` を基準にする。書き込みの道具でない・パスがない・解決できないときは、入力をそのまま返す（比べて偽になる。安全側）。
+ */
+export async function withRealWritePath(
+  toolName: string,
+  toolInput: unknown,
+  toolCwd: string,
+  resolve: ResolvePath,
+): Promise<unknown> {
+  const key = WRITE_TOOLS[toolName];
+  if (key === undefined || !isRec(toolInput)) return toolInput;
+  const p = toolInput[key];
+  if (typeof p !== "string" || p === "") return toolInput;
+  try {
+    const abs = p.startsWith("/") ? p : `${toolCwd.replace(/\/+$/, "")}/${p}`;
+    return { ...toolInput, [key]: await resolve(abs) };
+  } catch {
+    return toolInput;
+  }
 }

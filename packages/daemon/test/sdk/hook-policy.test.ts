@@ -1,7 +1,11 @@
 import { PLUGIN_NAME, type Scope } from "@touryou/core";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { decideToolUse } from "../../src/sdk/hook-policy.js";
+import {
+  decideToolUse,
+  grantedOnlyByExtension,
+  withRealWritePath,
+} from "../../src/sdk/hook-policy.js";
 
 const CWD = "/wt/a";
 const scope: Scope = {
@@ -656,5 +660,116 @@ describe("plugin の設定（plugin.json の name・.mcp.json のサーバーの
         }
       }
     }
+  });
+});
+
+describe("grantedOnlyByExtension（#91: 承認済みの拡張にだけ、明示の許可）", () => {
+  const grep = `git grep -n -E "TODO|FIXME|XXX|HACK" -- . ':!pnpm-lock.yaml'`;
+  const brief: Scope = {
+    writableLocations: ["src"],
+    forbiddenLocations: [".git"],
+    allowedCommands: ["pnpm test"],
+  };
+  const risky = [
+    "node",
+    "node x.js",
+    "pnpm exec x",
+    "git -c a=b log",
+    "git",
+    "cd docs",
+    "git config x y",
+  ];
+  const effective: Scope = {
+    ...brief,
+    allowedCommands: ["pnpm test", "git ls-files docs .sdd", grep, "git grep", ...risky],
+  };
+  const permit = (command: string, tool = "Bash") =>
+    grantedOnlyByExtension(brief, effective, tool, { command }, "/w");
+
+  it("承認した形そのもの（引用符の付け方だけ違う形を含む）だけが真", () => {
+    expect(permit("git ls-files docs .sdd")).toBe(true);
+    expect(permit(grep)).toBe(true);
+    expect(permit(`git grep -n -E 'TODO|FIXME|XXX|HACK' -- . ':!pnpm-lock.yaml'`)).toBe(true);
+    expect(permit("git grep x")).toBe(false); // 2 語の "git grep" は承認済みでも、語の数が違う
+  });
+  it("前方一致のぶん（うしろに旗を足した形）は偽（フックだけ通し、Claude Code の判定に任せる）", () => {
+    expect(permit("git ls-files docs .sdd -z")).toBe(false);
+    expect(permit("git grep -O sh x")).toBe(false);
+    expect(permit("git grep --open-files-in-pager=sh x")).toBe(false);
+  });
+  it("前方一致で通るだけの、リンクをたどる旗・略した長いオプションは偽", () => {
+    const e2: Scope = {
+      ...brief,
+      allowedCommands: ["pnpm test", "git grep", "find", "grep", "grep -R", "find -L ."],
+    };
+    for (const c of ["git grep --open=echo x", "grep -R x .", "find -L . -name a"])
+      expect(grantedOnlyByExtension(brief, e2, "Bash", { command: c }, "/w"), c).toBe(false);
+  });
+  it("書き込み: 承認した場所だけが真。ブリーフの場所・承認していない場所・禁じる場所は偽", () => {
+    const e3: Scope = {
+      ...brief,
+      writableLocations: ["src", "docs"],
+      forbiddenLocations: [".git", "docs/secret"],
+    };
+    const w = (tool: string, input: Record<string, unknown>) =>
+      grantedOnlyByExtension(brief, e3, tool, input, "/w");
+    expect(w("Write", { file_path: "/w/docs/a.md" })).toBe(true);
+    expect(w("Edit", { file_path: "docs/b.md" })).toBe(true);
+    expect(w("NotebookEdit", { notebook_path: "/w/docs/n.ipynb" })).toBe(true);
+    expect(w("MultiEdit", { file_path: "/w/docs/m.md" })).toBe(true);
+    expect(w("MultiEdit", { file_path: "/w/src/m.ts" })).toBe(false);
+    expect(w("Write", { file_path: "/w/src/a.ts" })).toBe(false);
+    expect(w("Write", { file_path: "/w/other/a.ts" })).toBe(false);
+    expect(w("Write", { file_path: "/w/docs/secret/k" })).toBe(false);
+    expect(w("Write", {})).toBe(false);
+  });
+  it("任意のコードが動く形・1 語・cd 始まりの承認には、明示の許可を付けない（起動のときの一覧と同じ規則）", () => {
+    for (const c of risky) expect(permit(c), c).toBe(false);
+  });
+  it("ブリーフで通る形・承認していない形・区切りで足した形・Bash 以外は偽", () => {
+    expect(permit("pnpm test")).toBe(false);
+    expect(permit("git ls-files src")).toBe(false);
+    expect(permit("git push")).toBe(false);
+    expect(permit(`${grep}; rm -rf /`)).toBe(false);
+    expect(permit("pnpm test && git ls-files docs .sdd")).toBe(false);
+    expect(permit(grep, "Read")).toBe(false);
+    expect(grantedOnlyByExtension(brief, effective, "Bash", {}, "/w")).toBe(false);
+  });
+});
+
+describe("grantedOnlyByExtension の区切りを含む承認・withRealWritePath（#91）", () => {
+  const brief: Scope = {
+    writableLocations: ["src"],
+    forbiddenLocations: [".git"],
+    allowedCommands: ["pnpm test"],
+  };
+  it("区切りを含む承認の項目は、引用符で同じ語にしても明示の許可を付けない", () => {
+    const eff: Scope = { ...brief, allowedCommands: ["pnpm test", "git log; rm x"] };
+    expect(grantedOnlyByExtension(brief, eff, "Bash", { command: "git 'log;' rm x" }, "/w")).toBe(
+      false,
+    );
+    expect(grantedOnlyByExtension(brief, eff, "Bash", { command: "git log; rm x" }, "/w")).toBe(
+      false,
+    );
+  });
+  it("書き込みのパスを実パスにする（相対は道具の cwd から）。解決できなければそのまま", async () => {
+    const resolve = async (p: string) => p.replace(/^\/var\//, "/private/var/");
+    expect(await withRealWritePath("Write", { file_path: "/var/w/docs/a" }, "/x", resolve)).toEqual(
+      {
+        file_path: "/private/var/w/docs/a",
+      },
+    );
+    expect(await withRealWritePath("Edit", { file_path: "docs/a" }, "/var/w", resolve)).toEqual({
+      file_path: "/private/var/w/docs/a",
+    });
+    const fail = async (): Promise<string> => {
+      throw new Error("x");
+    };
+    expect(await withRealWritePath("Write", { file_path: "/a" }, "/w", fail)).toEqual({
+      file_path: "/a",
+    });
+    expect(await withRealWritePath("Bash", { command: "ls" }, "/w", resolve)).toEqual({
+      command: "ls",
+    });
   });
 });
