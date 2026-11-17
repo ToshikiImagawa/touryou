@@ -1,0 +1,31 @@
+name: marketplace ref
+
+# project の .claude/settings.json の ref（marketplace-v<版>）の tag を照らす（#90。docs/release.md の 5-a）。
+# - marketplace-v* の tag の push：push された tag の中の marketplace.json の版が、tag 名の版と同じか（付ける先の間違いに、その場で気づく）。
+# - 日に 1 回・手動：main の ref の tag が上流にあり、中の版が合うか（付け忘れに気づく）。marketplace-self の PR のマージから tag までの短い間に当たると失敗するが、
+#   付け忘れの知らせなので、それは許す。
+# PR では照らさない（PR の CI は ci.yml で名前の一致だけ）。main への push も、きっかけにしない（tag はマージのあとに付けるので、版上げのたびに必ず落ちるため）。必須の check にはしない。
+on:
+  push:
+    tags: ["marketplace-v*"]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: push された tag の中の marketplace.json の版が、tag 名の版と同じ
+        if: github.event_name == 'push'
+        run: bash scripts/check-marketplace-ref.sh pushed "${GITHUB_REF_NAME}"
+      - name: main の ref の tag があり、中の marketplace.json の版が合う
+        if: github.event_name != 'push'
+        run: bash scripts/check-marketplace-ref.sh tag
