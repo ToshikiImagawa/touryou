@@ -71,6 +71,7 @@ import {
 import { pickResult } from "./results.js";
 import { createSseHub, nodeFeedOf, responseSink } from "./sse-hub.js";
 import { UI_CSS, UI_HEADERS, UI_HTML, UI_HTML_HEADERS, UI_JS } from "./ui-assets.js";
+import { createUiSessionStore, type UiSessionStore } from "./ui-session.js";
 import { parseEnvelope, validateParams } from "./validate.js";
 
 export interface HandlerRequest<Op extends DaemonOperation = DaemonOperation> {
@@ -108,6 +109,13 @@ export type ApiLogEvent =
       readonly at: string;
     }
   | { readonly event: "bindSucceeded"; readonly nodeId: string; readonly at: string }
+  /** `POST /v1/request` を、画面のセッション（`touryou ui` のチケットから交換したもの）で受けた。トークン・チケットは書かない。 */
+  | {
+      readonly event: "uiSessionRequest";
+      readonly requestId: string;
+      readonly operation: DaemonOperation;
+      readonly at: string;
+    }
   /** `POST /v1/hook`: 結んだものと別の `session_id` を拒否した。ID は書かない。 */
   | { readonly event: "hookSessionMismatch"; readonly at: string }
   | {
@@ -160,6 +168,11 @@ export type ApiLogger = (event: ApiLogEvent) => void;
 
 export interface ApiDeps {
   readonly credentials: CredentialStore;
+  /**
+   * 状態画面のチケットとセッション（`POST /v1/ui/ticket`・`POST /v1/ui/session`。Issue #88）。省略すると、メモリだけの既定を作る
+   * （daemon を起動し直すと、すべて切れる）。セッションのトークンは、人間と同じ主体として認証する。
+   */
+  readonly uiSessions?: UiSessionStore;
   /** 認可（部分木の判定）に使う現在の状態。 */
   readonly getState: () => OrchState;
   /**
@@ -431,6 +444,13 @@ function readBody(req: IncomingMessage, max: number): Promise<Buffer | undefined
 export function createApiServer(deps: ApiDeps): ApiServer {
   const maxBody = deps.maxBodyBytes ?? DEFAULT_MAX_BODY;
   let port = 0;
+  const uiSessions = deps.uiSessions ?? createUiSessionStore();
+  /** 認証。人間のトークン・ノードのトークンに加えて、画面のセッションのトークンを、人間として通す。 */
+  const authenticate = (token: string | undefined, touch = true): Principal | undefined =>
+    deps.credentials.authenticate(token) ??
+    (token !== undefined && uiSessions.isSession(token, touch)
+      ? { role: "human" as const, via: "uiSession" as const }
+      : undefined);
 
   const rl = deps.rateLimit ?? {};
   const mono = rl.monotonicMs;
@@ -614,6 +634,8 @@ export function createApiServer(deps: ApiDeps): ApiServer {
     if (path === "/v1/hook" && deps.hook !== undefined) return handleHook(req, res, deps.hook);
     if (path === "/v1/whoami") return handleWhoami(req, res);
     if (path === "/v1/ui/state") return handleUiState(req, res);
+    if (path === "/v1/ui/ticket") return handleUiTicket(req, res);
+    if (path === "/v1/ui/session") return handleUiSession(req, res);
     if (path === "/v1/events") return handleEvents(req, res);
     const asset =
       path !== undefined && Object.hasOwn(UI_ASSETS, path) ? UI_ASSETS[path] : undefined;
@@ -628,7 +650,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
       });
     }
     const token = parseBearer(req.headers.authorization);
-    const principal = deps.credentials.authenticate(token);
+    const principal = authenticate(token);
     if (principal === undefined) {
       return authFailed(req, res, failReason(token));
     }
@@ -798,6 +820,10 @@ export function createApiServer(deps: ApiDeps): ApiServer {
       counters.count("rateLimited", "inProgressTable");
       return tooMany(res, 1);
     }
+    // 画面のセッションの操作は、受け付けたときに、ログに印を残す（記録の行為者は、人間のまま）
+    if (principal.role === "human" && principal.via === "uiSession") {
+      log({ event: "uiSessionRequest", requestId, operation, at: now() });
+    }
     let resolveReply: (r: Reply) => void = () => undefined;
     const entry: InProgressEntry = {
       fingerprint,
@@ -913,7 +939,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
         { "www-authenticate": "Bearer" },
       );
     const wsToken = parseBearer(req.headers.authorization);
-    const principal = deps.credentials.authenticate(wsToken);
+    const principal = authenticate(wsToken);
     if (principal === undefined) {
       authFailed(req, res, failReason(wsToken));
       return;
@@ -1247,7 +1273,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
       return undefined;
     }
     const token = parseBearer(req.headers.authorization);
-    const principal = deps.credentials.authenticate(token);
+    const principal = authenticate(token);
     if (principal === undefined || token === undefined) {
       authFailed(req, res, failReason(token));
       return undefined;
@@ -1280,6 +1306,111 @@ export function createApiServer(deps: ApiDeps): ApiServer {
       return undefined;
     }
     return token;
+  }
+
+  /**
+   * `POST /v1/ui/ticket`: 画面を開くための使い捨てのチケット（60 秒・1 回だけ）。`human-token` だけが呼べる
+   * （画面のセッションのトークン・ノードのトークンは 403）。チケットは応答の本文にだけ出し、ログ・記録に出さない。
+   */
+  function handleUiTicket(req: IncomingMessage, res: ServerResponse): void {
+    req.resume();
+    if (req.method !== "POST") {
+      reject(res, failure("methodNotAllowed", "POST だけを受け付ける", "POST で呼び出す"), {
+        allow: "POST",
+        ...CLOSE,
+      });
+      return;
+    }
+    const token = parseBearer(req.headers.authorization);
+    const principal = authenticate(token);
+    if (principal === undefined) {
+      authFailed(req, res, failReason(token));
+      return;
+    }
+    const used = principalLimiter.tryConsume(principalKey(principal), 1);
+    if (!used.ok) {
+      counters.count("rateLimited", "principal");
+      tooMany(res, used.retryAfterSec, true);
+      return;
+    }
+    if (deps.credentials.authenticate(token)?.role !== "human") {
+      reject(
+        res,
+        failure(
+          "forbidden",
+          "チケットは人間のトークン（human-token）だけがもらえる",
+          "Mac のターミナルで touryou ui を実行する",
+        ),
+        CLOSE,
+      );
+      return;
+    }
+    send(res, 200, { ok: true, value: { ticket: uiSessions.issueTicket() } }, CLOSE);
+  }
+
+  /** チケットの交換の失敗（誤り・期限切れ・使用済みを分けない）。 */
+  const ticketRejected = (): Failure =>
+    failure(
+      "unauthenticated",
+      "チケットが使えない",
+      "Mac のターミナルで touryou ui を実行して、画面を開き直す",
+    );
+
+  /**
+   * `POST /v1/ui/session`: チケット（本文 `{ ticket }`）を、画面のセッションのトークンに交換する。認証はない（チケットが資格）。
+   * 失敗は接続元ごとの失敗の制限で数え、尽きたら、チケットを照合せずに断る（総当たりを断つ）。
+   */
+  async function handleUiSession(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "POST") {
+      req.resume();
+      reject(res, failure("methodNotAllowed", "POST だけを受け付ける", "POST で呼び出す"), {
+        allow: "POST",
+        ...CLOSE,
+      });
+      return;
+    }
+    const ctype = String(req.headers["content-type"] ?? "")
+      .split(";")[0]
+      ?.trim()
+      .toLowerCase();
+    if (ctype !== "application/json") {
+      req.resume();
+      reject(
+        res,
+        failure("unsupportedMediaType", "本文は application/json だけを受け付ける", "JSON で送る"),
+        CLOSE,
+      );
+      return;
+    }
+    const origin = req.socket.remoteAddress ?? "unknown";
+    const pre = failureLimiter.canConsume(origin, 1);
+    if (!pre.ok) {
+      req.resume();
+      counters.count("rateLimited", "origin");
+      tooMany(res, pre.retryAfterSec, true);
+      return;
+    }
+    const raw = await readBody(req, BIND_MAX_BODY);
+    let ticket: unknown;
+    try {
+      ticket =
+        raw === undefined
+          ? undefined
+          : (JSON.parse(raw.toString("utf8")) as { ticket?: unknown })?.ticket;
+    } catch {
+      ticket = undefined;
+    }
+    const session = uiSessions.exchange(ticket);
+    if (session === undefined) {
+      counters.count("authFailed", "uiTicket");
+      const c = failureLimiter.tryConsume(origin, 1);
+      reject(res, ticketRejected(), {
+        ...CLOSE,
+        ...(c.ok ? {} : { "retry-after": String(c.retryAfterSec) }),
+      });
+      return;
+    }
+    send(res, 200, { ok: true, value: { session } });
   }
 
   /** 画面の表示モデル。 */
@@ -1339,7 +1470,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
     },
     // 確認待ちの変化（記録の seq は変わらない）も、画面に知らせる（どちらも増えるだけなので、和も増えるだけ）。
     getSeq: () => deps.getState().lastSeq + (deps.confirmationsVersion?.() ?? 0),
-    isTokenValid: (token) => deps.credentials.authenticate(token) !== undefined,
+    isTokenValid: (token) => authenticate(token, false) !== undefined,
     nowMs: hrtimeMs,
     nodeFeed: (nodeId, afterSeq) => nodeFeedOf(deps.getState(), nodeId, afterSeq),
     // 購読中の失効: heartbeat ごとに、接続のときと同じ確かめ（失効・ノードの停止・役割）と、ノードの一致を見る。
