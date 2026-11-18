@@ -17,6 +17,9 @@ import { runBin } from "../src/bin.js";
 import { LSREGISTER, legacyPlistText, runDaemonScript, v011PlistText } from "../src/launchd.js";
 import type { RunResult } from "../src/launchd-service.js";
 
+// launchd は macOS の常駐のしくみ。Windows では対象外なので、このファイルのテストは飛ばす。
+const suite = describe.skipIf(process.platform === "win32");
+
 // `touryou launchd apply|status|restart|stop|uninstall`。launchctl と窓口は偽物に差し替える（実際の launchctl は呼ばない）。
 const TOKEN = "oauth-secret-token-value-0123456789abcdef";
 const ORG = "com.example";
@@ -149,7 +152,7 @@ async function initHome(opts: { token?: boolean } = {}) {
 const seq = (f: Fake) =>
   f.calls.filter((c) => c[1] !== "print").map((c) => `${c[1]} ${c.at(-1)?.split("/").at(-1)}`);
 
-describe("apply", () => {
+suite("apply", () => {
   it("--yes がなければ、何もしない（終了コード 2。launchctl を呼ばない・plist を置かない）", async () => {
     const { home, f, agents } = await initHome();
     const r = await bin(home, f, ["apply", "--org", ORG]);
@@ -227,7 +230,7 @@ describe("apply", () => {
   });
 });
 
-describe("設定の検査（apply の前）", () => {
+suite("設定の検査（apply の前）", () => {
   it("設定が通らなければ、plist を置かず、launchctl を呼ばずに終了コード 1", async () => {
     const { home, base, f, agents } = await initHome();
     writeFileSync(
@@ -243,7 +246,7 @@ describe("設定の検査（apply の前）", () => {
   });
 });
 
-describe("status の最後の失敗", () => {
+suite("status の最後の失敗", () => {
   it("last exit code が 0 以外なら、daemon.log の最後の失敗の行を、値を伏せて出す", async () => {
     const { home, base, f } = await initHome();
     await bin(home, f, ["apply", "--yes", "--org", ORG]);
@@ -274,7 +277,7 @@ describe("status の最後の失敗", () => {
   });
 });
 
-describe("status・restart・stop", () => {
+suite("status・restart・stop", () => {
   it("status は、読み込みの状態と窓口を出す。動いていなければ終了コード 1", async () => {
     const { home, f } = await initHome();
     let r = await bin(home, f, ["status", "--org", ORG]);
@@ -316,7 +319,7 @@ describe("status・restart・stop", () => {
   });
 });
 
-describe("uninstall", () => {
+suite("uninstall", () => {
   it("--yes がなければ、何もしない", async () => {
     const { home, f } = await initHome();
     await bin(home, f, ["apply", "--yes", "--org", ORG]);
@@ -360,7 +363,7 @@ describe("uninstall", () => {
   });
 });
 
-describe("launchd の操作の回帰", () => {
+suite("launchd の操作の回帰", () => {
   it("apply: 窓口の応答の待ちは、時計で 60 秒まで（probe の回数ではない）", async () => {
     const { home, f } = await initHome();
     f.daemonAnswers = false;
@@ -495,7 +498,7 @@ describe("launchd の操作の回帰", () => {
   });
 });
 
-describe("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）からの引っ越し（#64）", () => {
+suite("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）からの引っ越し（#64）", () => {
   /** v0.1.0 の init・apply が置いたのと同じ、古い形の生成物（.touryou/launchd・bin・LaunchAgents）。 */
   function legacyHome(path = "/usr/bin:/bin:/usr/sbin:/sbin") {
     const h = makeHome();
@@ -620,7 +623,7 @@ describe("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）から�
   });
 });
 
-describe("前の形（v0.1.1。current/bin/node を直に起こす plist）からの引っ越しと、LaunchServices（#73）", () => {
+suite("前の形（v0.1.1。current/bin/node を直に起こす plist）からの引っ越しと、LaunchServices（#73）", () => {
   function v011Home() {
     const h = makeHome();
     const agents = join(h.home, "Library", "LaunchAgents");

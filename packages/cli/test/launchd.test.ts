@@ -19,6 +19,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runBin } from "../src/bin.js";
 import { legacyPlistText, plistText, runDaemonScript, v011PlistText } from "../src/launchd.js";
 
+// launchd は macOS の常駐のしくみ。Windows では対象外なので、このファイルのテストは飛ばす。
+const suite = describe.skipIf(process.platform === "win32");
+
 const has = (cmd: string, args: string[]): boolean => spawnSync(cmd, args).error === undefined;
 
 // `touryou launchd init`。生成物を、実際のシェルで走らせて確かめる（launchctl は使わない）。
@@ -51,7 +54,7 @@ const run = (home: string, args: string[]) =>
   runBin(["launchd", ...args], { env: { HOME: home }, isTTY: { stdin: false, stdout: false } });
 const mode = (p: string) => (statSync(p).mode & 0o777).toString(8);
 
-describe("引数・前提", () => {
+suite("引数・前提", () => {
   it("--org の形が違う・空・init がない、は終了コード 2（不正な値は、既定値に戻さない）", async () => {
     const { home } = makeHome();
     expect((await run(home, ["init", "--org", ""])).exitCode).toBe(2);
@@ -86,7 +89,7 @@ describe("引数・前提", () => {
   });
 });
 
-describe("設定の検査（daemon の --check-config）", () => {
+suite("設定の検査（daemon の --check-config）", () => {
   it("設定が通らなければ、何も生成せずに終了コード 1。理由と直し方を出し、値（パス）は伏せる", async () => {
     const { home, base } = makeHome();
     writeFileSync(
@@ -144,7 +147,7 @@ describe("設定の検査（daemon の --check-config）", () => {
   });
 });
 
-describe("生成物", () => {
+suite("生成物", () => {
   it("plist 0644・logs は 0700 で作る。起動スクリプト（bin/）は作らない（#64）。launchctl の案内を出す", async () => {
     const { home, base } = makeHome();
     const r = await run(home, ["init", "--org", ORG]);
@@ -441,7 +444,7 @@ describe("生成物", () => {
   // 案内の「トークンのファイルを作る」を、実際に bash で走らせる（利用者の zsh・bash の `read -s` と同じ形）
 });
 
-describe("plist の ProgramArguments（実際に走らせる）", () => {
+suite("plist の ProgramArguments（実際に走らせる）", () => {
   it("秘密を扱わない（子の認証トークンを読まない）。同梱の node に daemon の JS と --config を渡す", async () => {
     const h = makeHome();
     const out = join(h.home, "observed.txt");
@@ -475,7 +478,7 @@ describe("plist の ProgramArguments（実際に走らせる）", () => {
   });
 });
 
-describe("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）からの引っ越し（#64）", () => {
+suite("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）からの引っ越し（#64）", () => {
   /** v0.1.0 の init が生成したのと同じ、古い形の生成物を置く。 */
   const legacy = (
     h: { home: string; base: string },
@@ -576,14 +579,14 @@ describe("古い形（v0.1.0 まで。run-daemon.sh を起こす plist）から�
   });
 });
 
-describe("launchctl を実行しない", () => {
+suite("launchctl を実行しない", () => {
   it("launchd.ts は子プロセスを起動しない", () => {
     const src = readFileSync(new URL("../src/launchd.ts", import.meta.url), "utf8");
     expect(src).not.toMatch(/child_process|spawn|exec(Sync|File)?\(/);
   });
 });
 
-describe("前の形（v0.1.1。current/bin/node を直に起こす plist）からの引っ越し（#73）", () => {
+suite("前の形（v0.1.1。current/bin/node を直に起こす plist）からの引っ越し（#73）", () => {
   const v011 = (h: { base: string }, label: string, path = "/usr/bin:/bin:/usr/sbin:/sbin") => {
     mkdirSync(join(h.base, "launchd"), { recursive: true, mode: 0o755 });
     mkdirSync(join(h.base, "logs"), { recursive: true, mode: 0o700 });
