@@ -161,6 +161,13 @@ depends-on: ["design-touryou"]
 | T30-answer-delivered | 回答を子に届けたかを結果に出す | 残り |
 | T30-verified-done | verified の子に終わったことを知らせる | 残り |
 | T31-rename | 全体: 名前を touryou にそろえる | 済み |
+| T32-win-ci | CI: Windows の self-hosted runner で `scripts/check.sh` を動かす | 済み |
+| T32-win-acl | core: Windows で秘密のファイルの権限を ACL で検査する | 済み |
+| T32-win-path | core: Windows の形のパスを範囲の判定で扱う | 済み |
+| T32-win-launchd-skip | cli: launchd のテストを Windows で飛ばす | 済み |
+| T32-win-tests | Windows で残りのテストを通す | 残り |
+| T32-win-hook-policy | daemon: フックの判定のパスを Windows に対応させる | 残り |
+| T32-win-svc | cli: Windows の常駐 | 残り |
 
 ## 残りの課題
 
@@ -171,6 +178,9 @@ depends-on: ["design-touryou"]
 - **T30-tree-pending**: 止まった子の未回答の判断（pendingDecision）は、いまは `tree_list` の表にだけ出る。`tree.list` の `nodes`（`touryou tree` が読む）にも欄を足し、`touryou tree` でも「届かない」「止まった子」が分かるようにする（FR_005, FR_009）。
 - **T30-answer-delivered**: `decision.answer` の結果に、回答を子に届けたか（delivered）・届ける手段がなくて飛ばしたか（skipped）を足し、`touryou answer` がそれを出す。いまは cli が状態（waiting・running）から「届ける手段があれば届く」と出すだけで、届いたかは分からない（daemon の `answer-delivery` は canDeliver で手段を見て skipped にしている）（FR_009）。
 - **T30-verified-done**: 紐付けが退役した verified の子に「終わった」を知らせる手段がない。いまは購読が止まり、記録が 1 回残るだけ。子のモデルと人に分かる形で知らせる（FR_009）。
+- **T32-win-tests**: Windows で失敗するテストが残っている。原因は、終了コードの不一致（フックのシェルスクリプトや子プロセスの起動と見ている。未調査）、シンボリックリンクを作れない（開発者モードか管理者の権限が要る）、子の引き出しを用意できない、時間切れ、UNIX ソケット、`scripts/*.test.mjs`（POSIX シェル前提）（NFR_016）。
+- **T32-win-hook-policy**: daemon の `hook-policy.ts`・`path-resolve.ts` は、`/` 区切りの文字列の処理で範囲を強制している。Windows の形のパスの扱いは、設計が決まるまで手をつけない（FR_014, NFR_016）。
+- **T32-win-svc**: Windows の常駐のしかた（タスク スケジューラ・Windows サービス）は未決。決まるまで、Windows では launchd の操作を対象外とし、テストを飛ばす（NFR_015, NFR_016）。
 
 ## 未解決の事項
 
