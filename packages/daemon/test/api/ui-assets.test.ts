@@ -1,7 +1,20 @@
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { UI_CSS, UI_HEADERS, UI_HTML, UI_HTML_HEADERS, UI_JS } from "../../src/api/ui-assets.js";
+import {
+  INBOX_MESSAGES_JSON,
+  LIST_SEPS_JSON,
+  UI_CSS,
+  UI_HEADERS,
+  UI_HTML,
+  UI_HTML_HEADERS,
+  UI_JS,
+  UI_TEXT_JSON,
+} from "../../src/api/ui-assets.js";
 import { EXTERNAL_CHECK_SUMMARY, externalCheckSummaries } from "../../src/external-check.js";
+
+/** 埋め込んだ文字の表の行（#140）。JSON のオブジェクトの値だけの行（行の終わりまで形を決める）。走査から除くのは、この行だけ。 */
+const TABLE_LINE = /^ {2}var (?:TEXT|MESSAGES|SEPS) = \{[^\n]*\};$/gm;
+const TABLE_LINE_ONE = /^ {2}var (?:TEXT|MESSAGES|SEPS) = /;
 
 /** 画面の資産の走査。XSS・トークンの漏れにつながる書き方を禁じる。 */
 describe("画面の資産（走査）", () => {
@@ -73,14 +86,20 @@ describe("画面の資産（走査）", () => {
     });
     it("読み出した値は形を確かめ、知らない鍵・形の違う値は捨てる", () => {
       const src = fnOf("settingsOf");
-      const settingsOf = runInNewContext(
-        `(${src.replace("function settingsOf(", "function (")}\n  })`,
-      ) as (o: unknown) => unknown;
-      expect(settingsOf(null)).toEqual({ still: false, theme: "auto", lang: "ja" });
+      // 覚えた言語がなければ、ブラウザの言語（#140）
+      const of = (language: string) =>
+        runInNewContext(
+          `${fnOf("browserLang")}\n  }\n(${src.replace("function settingsOf(", "function (")}\n  })`,
+          { navigator: { language } },
+        ) as (o: unknown) => unknown;
+      const settingsOf = of("ja-JP");
+      // 言語は、選んだときだけ残す（選んでいなければ undefined で、JSON に書かれない。#140）
+      expect(settingsOf(null)).toEqual({ still: false, theme: "auto", lang: undefined });
+      expect(of("en-US")({ lang: "ja" })).toEqual({ still: false, theme: "auto", lang: "ja" });
       expect(settingsOf({ still: "yes", theme: "neon", lang: "fr", token: "t" })).toEqual({
         still: false,
         theme: "auto",
-        lang: "ja",
+        lang: undefined,
       });
       expect(settingsOf({ still: true, theme: "dark", lang: "en" })).toEqual({
         still: true,
@@ -95,11 +114,29 @@ describe("画面の資産（走査）", () => {
     });
   });
 
+  it("走査から除く行は、埋め込んだ表の 3 行だけで、どれも JSON.stringify の値そのもの（#140）", () => {
+    const lines = UI_JS.split("\n").filter((l) => TABLE_LINE_ONE.test(l));
+    expect(lines).toEqual([
+      `  var TEXT = ${UI_TEXT_JSON};`,
+      `  var MESSAGES = ${INBOX_MESSAGES_JSON};`,
+      `  var SEPS = ${LIST_SEPS_JSON};`,
+    ]);
+    expect(UI_JS.match(TABLE_LINE)).toHaveLength(3);
+  });
   it("許可リスト: `.` の後ろのプロパティ名は、安全な集合にあるものだけ（文字列・コメントを除く）", () => {
     const SAFE = new Set([
       // 要素・文字列・集合・配列・Promise の、安全な操作
       // 移った先のカードへ focus を移すため（tabIndex = -1。カードを Tab の並びには入れない）
       "tabIndex",
+      // 画面の言語（#140）: ブラウザの言語・知らせの鍵と値・ページの文字の鍵（data-t・data-t-aria・data-t-title）
+      "language",
+      "args",
+      "parts",
+      "sep",
+      "msg",
+      "t",
+      "tAria",
+      "tTitle",
       // 設定の窓（#139）。localStorage は、loadSettings・saveSettings の中だけ（上の「localStorage の使い所」の試験で確かめる）
       "still",
       "theme",
@@ -342,7 +379,10 @@ describe("画面の資産（走査）", () => {
       "cli",
       "attachDir",
     ]);
-    const code = UI_JS.replace(/'(?:[^'\\\n]|\\.)*'/g, "''").replace(/\/\/[^\n]*/g, "");
+    // 埋め込んだ文字の表（#140。JSON の値で、コードでない）は、走査から除く
+    const code = UI_JS.replace(TABLE_LINE, "")
+      .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+      .replace(/\/\/[^\n]*/g, "");
     const used = new Set([...code.matchAll(/\.\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1] as string));
     expect(used.has("textContent")).toBe(true); // 抜き出せていること（空の集合で通らない）
     const unknown = [...used].filter((x) => !SAFE.has(x));
@@ -435,11 +475,16 @@ describe("画面の資産（走査）", () => {
     };
     const api = runInNewContext(
       [
+        // 画面の言語（#140）。文字は表から引く。既定は日本語（英語の試験は setLang で切り替える）
+        line("var TEXT ="),
+        line("var PLACEHOLDER ="),
+        "var lang = 'ja';",
+        fn("t"),
         line("var TEXT_MAX ="),
         line("var FORBIDDEN ="),
         line("var REASON_MAX ="),
         line("var EXPECT_TIPS_MAX ="),
-        line("var CLI_HINT ="),
+        line("function cliHint("),
         line("var NODE_LIST_MAX ="),
         UI_JS.slice(
           UI_JS.indexOf("  var UNMET_NAMES = {"),
@@ -482,10 +527,11 @@ describe("画面の資産（走査）", () => {
             UI_JS.indexOf("};", UI_JS.indexOf("var CONFIRM_OP_LABELS =")) + 2,
           ),
         fn("approvalLines"),
-        "({ approvalLines: approvalLines, answerDoneText: answerDoneText, hookUnbindLines: hookUnbindLines, hookUnbindDoneText: hookUnbindDoneText, checkNote: checkNote, confirmStoppedParams: confirmStoppedParams, confirmStoppedLines: confirmStoppedLines, isReclaimPreview: isReclaimPreview, reclaimBlocked: reclaimBlocked, reclaimLines: reclaimLines, failureHint: failureHint, checkAnswer: checkAnswer, waitSecondsOf: waitSecondsOf, describeFailure: describeFailure, typedMatches: typedMatches, purgeRoots: purgeRoots, holdParams: holdParams, holdDoneText: holdDoneText, parseDays: parseDays, checkDays: checkDays, checkReason: checkReason, cleanText: cleanText })",
+        "({ setLang: function (l) { lang = l; }, approvalLines: approvalLines, answerDoneText: answerDoneText, hookUnbindLines: hookUnbindLines, hookUnbindDoneText: hookUnbindDoneText, checkNote: checkNote, confirmStoppedParams: confirmStoppedParams, confirmStoppedLines: confirmStoppedLines, isReclaimPreview: isReclaimPreview, reclaimBlocked: reclaimBlocked, reclaimLines: reclaimLines, failureHint: failureHint, checkAnswer: checkAnswer, waitSecondsOf: waitSecondsOf, describeFailure: describeFailure, typedMatches: typedMatches, purgeRoots: purgeRoots, holdParams: holdParams, holdDoneText: holdDoneText, parseDays: parseDays, checkDays: checkDays, checkReason: checkReason, cleanText: cleanText })",
       ].join("\n"),
       {},
     ) as {
+      setLang(l: "ja" | "en"): void;
       checkAnswer(text: string): string;
       waitSecondsOf(r: { status: number; retry: number }): number;
       describeFailure(r: { status: number; body: unknown; retry: number }): string;
@@ -1140,7 +1186,12 @@ describe("画面の使い勝手（#13）", () => {
       lineOf("function shellQuote("),
       lineOf("var PRIORITY_NAMES ="),
       lineOf("var EXTERNAL_CHECK_PREFIXES ="),
-      lineOf("var UNREACHABLE_TEXT ="),
+      lineOf("var EXTERNAL_CHECK_KEYS ="),
+      lineOf("var TEXT ="),
+      lineOf("var PLACEHOLDER ="),
+      "var lang = 'ja';",
+      fnOf("t"),
+      lineOf("function unreachableText("),
       lineOf("var ID_RE ="),
       lineOf("var FORBIDDEN ="),
       lineOf("function name("),
@@ -1153,7 +1204,7 @@ describe("画面の使い勝手（#13）", () => {
       fnOf("attachCommand"),
       fnOf("cleanText"),
       lineOf("function nodeLabel("),
-      "({ inboxBand: inboxBand, fetchFailureText: fetchFailureText, UNREACHABLE_TEXT: UNREACHABLE_TEXT, timeText: timeText, agoText: agoText, stageText: stageText, attachCommand: attachCommand, nodeLabel: nodeLabel })",
+      "({ inboxBand: inboxBand, fetchFailureText: fetchFailureText, UNREACHABLE_TEXT: unreachableText(), timeText: timeText, agoText: agoText, stageText: stageText, attachCommand: attachCommand, nodeLabel: nodeLabel })",
     ].join("\n"),
     uiContext,
   ) as {
@@ -1210,11 +1261,25 @@ describe("画面の使い勝手（#13）", () => {
         none,
       ).cls,
     ).toBe("failed");
+    // 鍵と値で書いた依頼（#140）は、文面でなく鍵で見分ける（英語の画面でも同じ）
+    for (const key of ["externalCheck", "externalCheckMore"])
+      expect(
+        api.inboxBand(
+          {
+            kind: "stopIncomplete",
+            nodeId: "root",
+            priority: "failed",
+            summary: "x",
+            msg: { key, args: {} },
+          },
+          none,
+        ).cls,
+      ).toBe("request");
   });
 
   it("(6) 「あなたの答え」の数は、人の操作が要るもの（needsHuman）だけ。未解決の項目すべて（openItems）は使わない（#89）", () => {
     expect(UI_JS).toContain(
-      "if (n.needsHuman > 0) head.appendChild(el('span', 'chip turn', 'あなたの答え ' + n.needsHuman + ' 件'))",
+      "if (n.needsHuman > 0) head.appendChild(el('span', 'chip turn', t('card.needsHuman', { n: n.needsHuman })))",
     );
     expect(UI_JS).not.toContain("openItems");
   });
@@ -1349,7 +1414,7 @@ describe("関係図の呼び出し（#89 の PR-5）", () => {
     );
     // 描けないとき（reject も同期の例外も）は一覧に戻る。戻すのは、いちばん新しい描きのときだけ
     expect(UI_JS).toContain(
-      "Promise.resolve(g.draw(box, view, { onPick: pick })).then(fit, fallback);",
+      "Promise.resolve(g.draw(box, view, { onPick: pick, lang: lang })).then(fit, fallback);",
     );
     expect(UI_JS).toMatch(/\} catch \(e\) \{\s*fallback\(\);/);
     expect(UI_JS).toMatch(
@@ -1357,9 +1422,11 @@ describe("関係図の呼び出し（#89 の PR-5）", () => {
     );
   });
   it("見せ方の切り替え（図・一覧）があり、動きを止める（.still）と OS の設定で、図の動きも止まる", () => {
-    expect(UI_HTML).toContain('<button id="show-graph" class="quiet sm" type="button">図</button>');
     expect(UI_HTML).toContain(
-      '<button id="show-list" class="quiet sm" type="button">一覧</button>',
+      '<button id="show-graph" class="quiet sm" type="button" data-t="view.graph">図</button>',
+    );
+    expect(UI_HTML).toContain(
+      '<button id="show-list" class="quiet sm" type="button" data-t="view.list">一覧</button>',
     );
     expect(UI_CSS).toContain(".still *,.still *::before{animation:none!important");
     expect(UI_CSS).toMatch(
@@ -1370,7 +1437,7 @@ describe("関係図の呼び出し（#89 の PR-5）", () => {
 });
 
 describe("カードの状態の札（図の箱と同じ言葉）", () => {
-  it("app.js の STATUS_TEXT・RUN_TEXT は、graph-model.ts と同じ言葉", async () => {
+  it("app.js の STATUS_TEXT・RUN_TEXT は、graph-model.ts と同じ言葉（同じ表の鍵。#140）", async () => {
     const { STATUS_TEXT, RUN_TEXT } = await import("../../src/ui/graph-model.js");
     const pick = (name: string): Record<string, string> => {
       const m = new RegExp(`var ${name} = (\\{[^\\n]*\\});`).exec(UI_JS);

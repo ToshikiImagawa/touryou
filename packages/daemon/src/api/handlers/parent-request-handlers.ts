@@ -34,7 +34,7 @@ import type { ProcessProbe } from "../../sdk/lsof-probe.js";
 import { checkPluginDir, type PluginDirPorts } from "../../sdk/plugin-dir.js";
 import type { HandlerRequest } from "../server.js";
 import { shellWord } from "./bind-handlers.js";
-import { appendAtomically, deriveId, fail, type LogPort, summarize } from "./context.js";
+import { appendAtomically, deriveId, fail, type LogPort, notice, summarize } from "./context.js";
 
 type R<Op extends keyof OperationMap> = Result<OperationMap[Op]["result"], Failure>;
 
@@ -133,9 +133,7 @@ export function discardRemoveBodies(state: OrchState, nodeId: string): EventBody
         id: requestInboxId(requestRef),
         kind: "info",
         nodeId,
-        summary: summarize(
-          `子 ${nodeId} のセッションの削除の依頼（人間が破棄を決めたので、未 push の成果を捨てる旗つき）。parent_request（nodeId: ${nodeId}）で文を受け取り、Bash でそのまま実行して、parent_report で報告する`,
-        ),
+        ...notice("removeDiscarded", { node: nodeId }),
       },
     },
   ];
@@ -162,9 +160,7 @@ export function sessionStopDeferredBodies(
         id: deriveId("inbox", "system", seed, "session-stop-deferred"),
         kind: "info",
         nodeId,
-        summary: summarize(
-          `子 ${nodeId} は受理したが、まだ報告のない親への依頼があるので、裏のセッションの停止の依頼をまだ出していない。その依頼を片付けたあとに node_stop（nodeId: ${nodeId}）を呼ぶと、停止の依頼が出る`,
-        ),
+        ...notice("acceptedPendingRequest", { node: nodeId }),
       },
     },
   ];
@@ -194,9 +190,7 @@ export function sessionStopBodies(state: OrchState, nodeId: string, seed: string
         id: requestInboxId(requestRef),
         kind: "info",
         nodeId,
-        summary: summarize(
-          `子 ${nodeId} は受理した。裏のセッションの停止の依頼。parent_request（nodeId: ${nodeId}）で文を受け取り、Bash でそのまま実行して、parent_report で報告する（止めたのを確かめたら、続けて削除を依頼する）`,
-        ),
+        ...notice("acceptedStopRequest", { node: nodeId }),
       },
     },
   ];
@@ -247,9 +241,7 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
                   id: itemId,
                   kind: "info",
                   nodeId,
-                  summary: summarize(
-                    `子 ${nodeId} に plugin を付けられなかった（${plugin.reason}）。子は、利用者の設定で入っている plugin だけで動く。子の道具やフックが無ければ、/touryou:setup の案内で plugin を入れ直す`,
-                  ),
+                  ...notice("pluginNotAttached", { node: nodeId, reason: plugin.reason }),
                 },
               },
             ]);
@@ -324,14 +316,14 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
       const add = (
         tag: string,
         kind: "info" | "failure" | "stopIncomplete",
-        text: string,
+        text: string | ReturnType<typeof notice>,
       ): EventBody => ({
         type: "inbox.added",
         payload: {
           id: deriveId("inbox", "system", requestRef, tag),
           kind,
           nodeId,
-          summary: summarize(text),
+          ...(typeof text === "string" ? { summary: summarize(text) } : text),
         },
       });
       const bodies: EventBody[] = [
@@ -385,9 +377,7 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
               id: requestInboxId(again),
               kind: "info",
               nodeId,
-              summary: summarize(
-                `子 ${nodeId} のセッションの${r.kind === "stop" ? "停止" : "削除"}の依頼（親が調べた id で作り直した）。parent_request（nodeId: ${nodeId}）で文を受け取り、Bash でそのまま実行して、parent_report で報告する`,
-              ),
+              ...notice(r.kind === "stop" ? "recreatedStop" : "recreatedRemove", { node: nodeId }),
             },
           },
         );
@@ -402,12 +392,16 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
             ? add(
                 "parent-failed",
                 "failure",
-                `子 ${nodeId} のセッションの削除（claude rm）を拒まれた。消していない: ${reason ?? "理由の記載なし"}。成果を捨てるかは人間が決める（破棄を決めたあとに、もう一度削除を依頼する）`,
+                reason === undefined
+                  ? notice("removeRefusedNoReason", { node: nodeId })
+                  : notice("removeRefused", { node: nodeId, reason }),
               )
             : add(
                 "parent-failed",
                 "failure",
-                `子 ${nodeId} の依頼（${r.kind}）を、親が実行できなかった: ${reason ?? "理由の記載なし"}`,
+                reason === undefined
+                  ? notice("parentFailedNoReason", { node: nodeId, kind: r.kind })
+                  : notice("parentFailed", { node: nodeId, kind: r.kind, reason }),
               ),
         );
       } else if (r.kind === "stop") {
@@ -435,11 +429,7 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
                   i.id !== itemId,
               )
               .map((i): EventBody => ({ type: "inbox.resolved", payload: { itemId: i.id } })),
-            add(
-              "stop-confirmed",
-              "info",
-              `子 ${nodeId} の停止を確かめた（作業ツリーのプロセスはない）`,
-            ),
+            add("stop-confirmed", "info", notice("stopVerified", { node: nodeId })),
           );
         }
         // 停止を確かめた（停止未完了から stopped にした・受理した子のセッションを止めた）ら、続けてセッションの削除（claude rm）を依頼する
@@ -456,9 +446,7 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
                 id: requestInboxId(removeRef),
                 kind: "info",
                 nodeId,
-                summary: summarize(
-                  `子 ${nodeId} のセッションの削除の依頼。parent_request（nodeId: ${nodeId}）で文を受け取り、Bash でそのまま実行して、parent_report で報告する`,
-                ),
+                ...notice("removeRequest", { node: nodeId }),
               },
             },
           );
@@ -466,31 +454,25 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
         if (!confirmed) {
           bodies.push(
             nodeState === "verified" && left !== null && left.length === 0
-              ? add(
-                  "session-stopped",
-                  "info",
-                  `受理した子 ${nodeId} の裏のセッションを止めた（作業ツリーのプロセスはない）`,
-                )
+              ? add("session-stopped", "info", notice("sessionStopped", { node: nodeId }))
               : add(
                   "stop-unconfirmed",
                   "stopIncomplete",
                   left === null
-                    ? `子 ${nodeId} は親が止めたと報告したが、作業ツリーのプロセスを確かめられない。確かめてから node_confirmStopped で宣言する`
+                    ? notice("stopUnverifiable", { node: nodeId })
                     : left.length > 0
-                      ? `子 ${nodeId} は親が止めたと報告したが、作業ツリーを使うプロセスが残っている（pid ${left.join(", ")}）。止めてから node_stop で再試行する`
-                      : `子 ${nodeId} は親が止めたと報告した（状態 ${nodeState ?? "不明"} のため、記録は変えない）`,
+                      ? notice("stopProcessesLeft", { node: nodeId, pids: left.join(", ") })
+                      : nodeState === undefined
+                        ? notice("stopReportedUnknownState", { node: nodeId })
+                        : notice("stopReportedState", { node: nodeId, state: nodeState }),
                 ),
           );
         }
       } else if (r.kind === "remove") {
         bodies.push(
           gone
-            ? add(
-                "removed",
-                "info",
-                `子 ${nodeId} のセッションは、もう一覧になかった（止めた時点で消えていた）。削除の依頼は済んだ扱いにした`,
-              )
-            : add("removed", "info", `子 ${nodeId} のセッションを削除した（claude rm）`),
+            ? add("removed", "info", notice("sessionGone", { node: nodeId }))
+            : add("removed", "info", notice("sessionRemoved", { node: nodeId })),
         );
       }
       if (agentState !== undefined && STALLED_AGENT_STATES.has(agentState)) {
@@ -498,7 +480,7 @@ export function createParentRequestHandlers(deps: ParentRequestHandlerDeps) {
           add(
             `agent-${agentState}`,
             "info",
-            `子 ${nodeId} は止まっているかもしれない（親の確かめ: ${agentState}）。人に、子のセッションへの attach を頼む`,
+            notice("agentStalled", { node: nodeId, state: agentState }),
           ),
         );
       }

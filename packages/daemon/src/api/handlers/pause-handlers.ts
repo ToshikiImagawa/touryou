@@ -19,6 +19,7 @@ import {
   COMPLETED_STATES,
   effectiveScope,
   type Failure,
+  messagePart,
   type NotResumed,
   type NotResumedReason,
   type OperationMap,
@@ -39,17 +40,18 @@ import {
   deriveId,
   fail,
   type LogPort,
+  notice,
   summarize,
   waitRequestKey,
 } from "./context.js";
 import type { InstructionDelivery } from "./instruction-delivery.js";
 
-/** 受信箱の文面（再開しなかった理由）。 */
-const NOT_RESUMED_TEXT: Readonly<Record<NotResumedReason, string>> = {
-  discarded: "破棄の判断を経たため",
-  stoppedAfterStopIncomplete: "停止未完了のあと止め直したため。新しい子でやり直す",
-  stoppedByOther: "判断のほかに止められたため",
-};
+/** 受信箱の文面の鍵（再開しなかった理由）。 */
+const NOT_RESUMED_KEY = {
+  discarded: "notResumedDiscarded",
+  stoppedAfterStopIncomplete: "notResumedStoppedAfterStopIncomplete",
+  stoppedByOther: "notResumedStoppedByOther",
+} as const satisfies Readonly<Record<NotResumedReason, string>>;
 
 type R<Op extends keyof OperationMap> = Result<OperationMap[Op]["result"], Failure>;
 type Async<Op extends keyof OperationMap> = R<Op> | Promise<R<Op>>;
@@ -181,9 +183,13 @@ export function createPauseHandlers(deps: PauseHandlerDeps) {
    */
   function reportStartFailure(target: string, parentId: string | null, f: Failure): void {
     if (parentId === null) return;
-    const summary = summarize(
-      `子 ${target} を再開できなかった（${f.code}）: ${f.cause}。対処: ${f.nextActions[0]}`,
-    );
+    const text = notice("resumeFailed", {
+      node: target,
+      code: f.code,
+      cause: f.cause,
+      next: f.nextActions[0],
+    });
+    const summary = text.summary;
     const state = log.state();
     if (
       state.inbox.some(
@@ -199,7 +205,7 @@ export function createPauseHandlers(deps: PauseHandlerDeps) {
           id: deriveId("inbox", "system", key, "failure"),
           kind: "failure",
           nodeId: target,
-          summary,
+          ...text,
         },
       },
     ]);
@@ -426,8 +432,20 @@ export function createPauseHandlers(deps: PauseHandlerDeps) {
                 id: deriveId("inbox", d.nodeId, d.decisionId, "resume-skipped"),
                 kind: "info",
                 nodeId: d.nodeId,
-                summary: summarize(
-                  `判断 ${d.decisionId} の回答で、再開しなかった子: ${skipped.map((x) => `${x.nodeId}（${NOT_RESUMED_TEXT[x.reason]}）`).join("、")}`,
+                ...notice(
+                  "resumeSkipped",
+                  { decision: d.decisionId },
+                  {
+                    children: {
+                      sep: "comma",
+                      items: skipped.map((x) =>
+                        messagePart("resumeSkippedChild", {
+                          node: x.nodeId,
+                          reasonKey: NOT_RESUMED_KEY[x.reason],
+                        }),
+                      ),
+                    },
+                  },
                 ),
               },
             },
