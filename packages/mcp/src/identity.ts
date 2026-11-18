@@ -21,7 +21,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { type Failure, failure } from "@touryou/core";
-import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+import { type AclCheck, defaultAclCheck, ownUid, permMode } from "@touryou/core/fs";
 
 export const IDENTITY_FILE = "daemon-identity";
 export const IDENTITY_CONTEXT = "touryou-daemon-identity-v1";
@@ -105,9 +105,9 @@ export function readIdentityFileSecure(path: string, ops: SecureReadOps = {}): s
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) throw new Error("not a regular file");
-    const uid = (ops.getuid ?? (() => process.getuid?.()))();
+    const uid = (ops.getuid ?? (() => ownUid()))();
     if (uid !== undefined && st.uid !== uid) throw new Error("owner mismatch");
-    if ((st.mode & 0o077) !== 0) throw new Error("permissions too open");
+    if ((permMode(st.mode) & 0o077) !== 0) throw new Error("permissions too open");
     if ((ops.acl ?? defaultAclCheck)(path, fd) !== undefined)
       throw new Error("acl present or unknown");
     if (st.size > FILE_MAX_BYTES) throw new Error("too large");

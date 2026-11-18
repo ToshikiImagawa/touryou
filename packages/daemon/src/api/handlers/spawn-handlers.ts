@@ -25,6 +25,7 @@ import {
   type EventBody,
   effectiveScope,
   type Failure,
+  isAbsolutePath,
   isInSubtree,
   isPathUnder,
   isScopeSubset,
@@ -323,7 +324,7 @@ export function createSpawner(deps: SpawnHandlerDeps) {
   /** ポートが返した作業ツリーのパスを信用しない: 絶対パスで、置き場の配下であること。 */
   const worktreePathOk = (worktreePath: unknown): worktreePath is string =>
     typeof worktreePath === "string" &&
-    worktreePath.startsWith("/") &&
+    isAbsolutePath(worktreePath) &&
     !worktreePath.includes("\0") &&
     isPathUnder(normalizePath("/", worktreePath), normalizePath("/", ports.worktreeRoot)) &&
     normalizePath("/", worktreePath) !== normalizePath("/", ports.worktreeRoot);

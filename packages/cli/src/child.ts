@@ -28,7 +28,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+import { type AclCheck, defaultAclCheck, ownUid, permMode } from "@touryou/core/fs";
 import {
   createIdentityVerifier,
   createRelay,
@@ -200,7 +200,7 @@ function checkDir(dir: string, uid: number, acl: AclCheck = defaultAclCheck): vo
     throw new FileCheckError("dirInvalid", "引き出しが実のディレクトリでない");
   }
   if (st.uid !== uid) throw new FileCheckError("dirInvalid", "引き出しの持ち主が自分でない");
-  if ((st.mode & 0o777) !== 0o700) throw new FileCheckError("dirInvalid", "引き出しが 0700 でない");
+  if (permMode(st.mode) !== 0o700) throw new FileCheckError("dirInvalid", "引き出しが 0700 でない");
   const why = acl(dir);
   if (why !== undefined) throw new FileCheckError("dirInvalid", `引き出しの${why}`);
 }
@@ -233,7 +233,7 @@ function readChecked(
   if (!st.isFile() || st.isSymbolicLink()) throw bad("ファイルが通常のファイルでない");
   if (st.uid !== uid) throw bad("ファイルの持ち主が自分でない");
   if (st.nlink !== 1) throw bad("ファイルのリンクの数が 1 でない");
-  if ((st.mode & (opts.strict ? 0o077 : 0o022)) !== 0) throw bad("ファイルの権限が緩い");
+  if ((permMode(st.mode) & (opts.strict ? 0o077 : 0o022)) !== 0) throw bad("ファイルの権限が緩い");
   if (st.size > opts.max) throw bad("ファイルが大きすぎる");
   deps.afterCheck?.(path);
   let fd: number;
@@ -253,12 +253,12 @@ function readChecked(
       !f.isFile() ||
       f.uid !== uid ||
       f.nlink !== 1 ||
-      (f.mode & (opts.strict ? 0o077 : 0o022)) !== 0 ||
+      (permMode(f.mode) & (opts.strict ? 0o077 : 0o022)) !== 0 ||
       f.size > opts.max
     ) {
       throw bad("ファイルが、確かめたあとに差し替えられた");
     }
-    const aclWhy = (deps.acl ?? defaultAclCheck)(path, fd);
+    const aclWhy = (deps.acl ?? defaultAclCheck)(path, fd, opts.strict ? "private" : "noWrite");
     if (aclWhy !== undefined) throw bad(`ファイルの${aclWhy}`);
     const buf = Buffer.alloc(opts.max + 1);
     let n = 0;
@@ -364,8 +364,7 @@ function parse(args: readonly string[], allowRequestId: boolean): Parsed | strin
   return { dir, url, ...(requestId === undefined ? {} : { requestId }), positional };
 }
 
-const uidOf = (deps: Pick<ChildDeps, "uid">): number =>
-  deps.uid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+const uidOf = (deps: Pick<ChildDeps, "uid">): number => deps.uid ?? ownUid() ?? -1;
 
 /** `touryou child <bind|report> ...`。 */
 export async function runChild(argv: readonly string[], deps: ChildDeps): Promise<CommandResult> {

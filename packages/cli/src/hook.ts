@@ -13,7 +13,7 @@
  */
 
 import { lstatSync, readFileSync } from "node:fs";
-import { ownMcpToolOf, PLUGIN_NAME } from "@touryou/core";
+import { isAbsolutePath, ownMcpToolOf, PLUGIN_NAME } from "@touryou/core";
 import { type AclCheck, readSecureFile } from "@touryou/core/fs";
 
 const defaultReadFile = (path: string): string => readFileSync(path, "utf8");
@@ -155,7 +155,7 @@ export function isTouryouWorktree(
   read: (path: string) => string,
   exists: (path: string) => boolean,
 ): boolean {
-  if (!cwd.startsWith("/")) return false;
+  if (!isAbsolutePath(cwd)) return false;
   let dir = cwd.replace(/\/+$/, "") || "/";
   for (let i = 0; i < 256; i++) {
     const dotGit = `${dir === "/" ? "" : dir}/.git`;
@@ -163,7 +163,7 @@ export function isTouryouWorktree(
     try {
       const m = /^gitdir:\s*(.+?)\s*$/m.exec(read(dotGit));
       if (m?.[1] !== undefined) {
-        gitDir = m[1].startsWith("/") ? m[1] : `${dir === "/" ? "" : dir}/${m[1]}`;
+        gitDir = isAbsolutePath(m[1]) ? m[1] : `${dir === "/" ? "" : dir}/${m[1]}`;
       }
     } catch {
       if (exists(dotGit)) gitDir = dotGit; // ディレクトリの .git（ふつうのリポジトリ）
@@ -194,7 +194,7 @@ function daemonUrlFromState(
   if (configPath === undefined) return undefined;
   const j = JSON.parse(read(configPath, 0o022)) as { stateDir?: unknown } | null;
   const stateDir = j?.stateDir;
-  if (typeof stateDir !== "string" || !stateDir.startsWith("/")) return undefined;
+  if (typeof stateDir !== "string" || !isAbsolutePath(stateDir)) return undefined;
   const port = read(`${stateDir.replace(/\/+$/, "")}/port`, 0o077).trim();
   if (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return undefined;
   return `http://127.0.0.1:${Number(port)}`;

@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveVersion, versionLine } from "@touryou/core";
-import { readSecureFile } from "@touryou/core/fs";
+import { ownUid, readSecureFile } from "@touryou/core/fs";
 import { createIdentityVerifier, createRelay, IDENTITY_FILE } from "@touryou/mcp/relay";
 import { runChild } from "./child.js";
 import { type CommandResult, runCommand } from "./commands.js";
@@ -200,7 +200,7 @@ export async function runBin(argv: readonly string[], deps: BinDeps): Promise<Co
           const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 30_000 });
           return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
         }),
-      uid: deps.launchd?.uid ?? (() => process.getuid?.() ?? -1),
+      uid: deps.launchd?.uid ?? (() => ownUid() ?? -1),
       probe:
         deps.launchd?.probe ??
         (async (port) => {

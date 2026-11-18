@@ -18,6 +18,7 @@ import {
   type ExtensionRecord,
   effectiveScope,
   type Failure,
+  isAbsolutePath,
   isScopeSubset,
   isStrictDescendant,
   type NodeState,
@@ -64,7 +65,7 @@ function targetProblem(target: { kind: string; value: string }): string | undefi
   if (v.trim() === "" || v !== v.trim()) return "前後の空白・空の値は使えない";
   if (CONTROL.test(v)) return "制御文字（改行を含む）は使えない";
   if (target.kind === "write") {
-    if (v.startsWith("/")) return "絶対パスは使えない";
+    if (isAbsolutePath(v) || v.startsWith("\\")) return "絶対パスは使えない";
     const segs = v.split("/");
     if (segs.some((seg) => seg === "..")) return ".. は使えない";
     if (/[*?[\]{}]/u.test(v)) return "glob 文字（* ? [ ] { }）は使えない";

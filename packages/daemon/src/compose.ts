@@ -40,6 +40,7 @@ import {
   type Result,
   type ScopeViolationReason,
 } from "@touryou/core";
+import { defaultAclCheck, ownUid, permMode } from "@touryou/core/fs";
 import { createConfirmationGate } from "./api/confirmation-gate.js";
 import { assertSecureDirectory, processUid, readSecureSecret } from "./api/fs-safety.js";
 import { recoverAnswerDeliveries } from "./api/handlers/answer-delivery.js";
@@ -283,9 +284,14 @@ function prepareStateDir(dir: string): Failure | undefined {
     if (!exists) mkdirSync(dir, { recursive: true, mode: 0o700 });
     assertSecureDirectory(dir, processUid());
     // 認証情報・状態を置くので、グループ・他者の権限を一切許さない（0700）。
-    const mode = lstatSync(dir).mode;
+    const mode = permMode(lstatSync(dir).mode);
     if ((mode & 0o077) !== 0) {
-      throw new Error(`権限が緩い（${(mode & 0o777).toString(8)}）。0700 にする`);
+      throw new Error(`権限が緩い（${mode.toString(8)}）。0700 にする`);
+    }
+    // Windows の mode は権限を映さないので、ACL で確かめる（ほかの利用者に、読む許可もないこと）。
+    if (process.platform === "win32") {
+      const why = defaultAclCheck(dir, undefined, "private");
+      if (why !== undefined) throw new Error(why);
     }
     return undefined;
   } catch (e) {
@@ -1379,7 +1385,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
     // 今ある .claude は、実のディレクトリ（リンクでない）で持ち主が自分であること
     try {
       const d = lstatSync(dir);
-      if (!d.isDirectory() || d.isSymbolicLink() || d.uid !== process.getuid?.()) {
+      if (!d.isDirectory() || d.isSymbolicLink() || d.uid !== ownUid()) {
         return fail(
           "hookSettingsExists",
           "子の作業ツリーの .claude が、実のディレクトリでないか、持ち主が自分でない",
@@ -1400,7 +1406,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
       const st = lstatSync(file);
       // 使い回す settings.json は、通常のファイル・リンクの数 1・持ち主が自分・ほかの人が書けない
       existing =
-        st.isFile() && st.nlink === 1 && st.uid === process.getuid?.() && (st.mode & 0o022) === 0
+        st.isFile() && st.nlink === 1 && st.uid === ownUid() && (permMode(st.mode) & 0o022) === 0
           ? readFileSync(file, "utf8")
           : "";
     } catch (e) {

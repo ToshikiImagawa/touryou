@@ -9,7 +9,9 @@
  * `human-token` は、メモリの中だけで使い、標準出力・標準エラー・引数・ログに出さない。チケットも、標準出力・標準エラーに出さない
  * （`open` の引数にだけ渡す。`ps` に出るのは、使い捨てのチケットだけ）。ブラウザを開けないときは、URL を出さずに止まる。
  */
+
 import { join } from "node:path";
+import { isAbsolutePath } from "@touryou/core";
 import { readSecureFile } from "@touryou/core/fs";
 import { createIdentityVerifier, IDENTITY_FILE, type IdentityVerifier } from "@touryou/mcp/relay";
 import type { CommandResult } from "./commands.js";
@@ -63,7 +65,7 @@ export async function runUi(argv: readonly string[], deps: UiDeps): Promise<Comm
   let stateDir: string;
   try {
     const j = JSON.parse(read(configPath, 0o022)) as { stateDir?: unknown } | null;
-    if (typeof j?.stateDir !== "string" || !j.stateDir.startsWith("/")) throw new Error("stateDir");
+    if (typeof j?.stateDir !== "string" || !isAbsolutePath(j.stateDir)) throw new Error("stateDir");
     stateDir = j.stateDir.replace(/\/+$/, "");
   } catch {
     return fail(

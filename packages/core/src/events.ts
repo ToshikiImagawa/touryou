@@ -33,6 +33,7 @@ import { INBOX_KINDS, type InboxKind, PRIORITIES, type Priority } from "./inbox-
 import type { NodeRole, NodeState } from "./index.js";
 import { isBoundedText, LIMITS } from "./limits.js";
 import type { Scope, ScopeViolationReason } from "./scope.js";
+import { isAbsolutePath } from "./scope.js";
 import {
   COMPLETED_STATES,
   type NodeEvent,
@@ -908,7 +909,7 @@ const parentRequestShape = (r: unknown): boolean =>
   typeof r.kind === "string" &&
   (PARENT_REQUEST_KINDS as readonly string[]).includes(r.kind) &&
   typeof r.worktree === "string" &&
-  r.worktree.startsWith("/") &&
+  isAbsolutePath(r.worktree) &&
   (r.report === undefined || isRec(r.report));
 const toolDenialShape = (r: unknown): boolean =>
   isRec(r) &&
@@ -2112,7 +2113,7 @@ function step(d: Draft, raw: unknown): Result<boolean, FoldFailure> {
         typeof kind !== "string" ||
         !(PARENT_REQUEST_KINDS as readonly string[]).includes(kind) ||
         !isBoundedText(worktree, PARENT_WORKTREE_MAX) ||
-        !worktree.startsWith("/")
+        !isAbsolutePath(worktree)
       )
         return invalid(seq, "node.parentRequested の payload");
       if (nodeAt(d, nodeId) === undefined) return unknownNode(seq, nodeId);

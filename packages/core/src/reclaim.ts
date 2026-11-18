@@ -31,7 +31,7 @@
 import { type Failure, failure, ok, type Result } from "./contract.js";
 import type { NodeState } from "./index.js";
 import { type ProcessLabel, processCommandName } from "./process-name.js";
-import { isPathUnder, normalizePath } from "./scope.js";
+import { isAbsolutePath, isPathUnder, normalizePath } from "./scope.js";
 import { COMPLETED_STATES } from "./transition.js";
 import { descendantsOf, type TreeNode } from "./tree.js";
 
@@ -113,7 +113,7 @@ type Rec = Record<string, unknown>;
 const isRec = (x: unknown): x is Rec => typeof x === "object" && x !== null && !Array.isArray(x);
 const hasNul = (s: string): boolean => s.includes("\0");
 const validAbs = (p: unknown): p is string =>
-  typeof p === "string" && p.startsWith("/") && !hasNul(p);
+  typeof p === "string" && isAbsolutePath(p) && !hasNul(p);
 const validWorktree = (p: unknown): p is string => validAbs(p) && normalizePath("/", p) !== "/";
 
 const bad = (cause: string): Result<never, Failure> => ({

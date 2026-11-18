@@ -26,6 +26,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { fsyncDir } from "@touryou/core/fs";
 import { assertSecureDirectory, processUid, readSecureSecret } from "./fs-safety.js";
 
 export interface RevokedRecord {
@@ -176,12 +177,7 @@ export class FileRevokedStore implements RevokedStore {
     }
     chmodSync(tmp, 0o600);
     renameSync(tmp, this.path);
-    const dfd = openSync(dir, "r");
-    try {
-      fsyncSync(dfd);
-    } finally {
-      closeSync(dfd);
-    }
+    fsyncDir(dir);
   }
 }
 

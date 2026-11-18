@@ -24,7 +24,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { type Failure, failure, isSessionId, ok, type Result } from "@touryou/core";
-import { aclProblemOfMode, modeString, readSecureFile } from "@touryou/core/fs";
+import { aclProblemOfMode, modeString, ownUid, readSecureFile } from "@touryou/core/fs";
 import { type CodeFileOps, isCodeShape, readCodeFile, removeCodeFile } from "./bind-code-file.js";
 import { bindChild } from "./child-bind.js";
 import { detectOpenMode, type MarkerOps } from "./child-marker.js";
@@ -76,7 +76,7 @@ function checkDir(path: string): string | undefined {
   }
   if (st.isSymbolicLink()) return "リンクになっている（リンクは受け付けない）";
   if (!st.isDirectory()) return "ディレクトリでない";
-  const uid = process.getuid?.();
+  const uid = ownUid();
   if (uid !== undefined && st.uid !== uid) return "自分のものでない";
   return undefined;
 }

@@ -19,7 +19,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+import { type AclCheck, defaultAclCheck, ownUid, permMode } from "@touryou/core/fs";
 
 /** `packages/daemon/src/bind-code-file.ts` の `BIND_CODE_FILE` と同じ値。 */
 export const BIND_CODE_FILE = "touryou-bind-code";
@@ -74,12 +74,12 @@ export function readCodeFile(cwd: string, ops: CodeFileOps = {}): ReadCodeResult
   } catch {
     return { ok: false, reason: "missing", path };
   }
-  const uid = (ops.uid ?? (() => process.getuid?.()))();
+  const uid = (ops.uid ?? (() => ownUid()))();
   if (
     st.isSymbolicLink() ||
     !st.isFile() ||
     (uid !== undefined && st.uid !== uid) ||
-    (st.mode & 0o777) !== 0o600 ||
+    permMode(st.mode) !== 0o600 ||
     st.size > 256
   ) {
     return { ok: false, reason: "unsafe", path };

@@ -8,14 +8,21 @@
  */
 
 import { lstatSync } from "node:fs";
-import { type AclCheck, defaultAclCheck, readSecureFile, SecureFileError } from "@touryou/core/fs";
+import {
+  type AclCheck,
+  defaultAclCheck,
+  ownUid,
+  permMode,
+  readSecureFile,
+  SecureFileError,
+} from "@touryou/core/fs";
 
 export type { AclCheck };
 
 /** このプロセスのユーザー ID。取得できない環境では `undefined`（所有者は確かめない）。 */
-export const processUid = (): number | undefined => process.getuid?.();
+export const processUid = (): number | undefined => ownUid();
 
-const octal = (mode: number): string => (mode & 0o777).toString(8);
+const octal = (mode: number): string => permMode(mode).toString(8);
 
 export function assertSecureDirectory(
   dir: string,
@@ -29,12 +36,13 @@ export function assertSecureDirectory(
   if (uid !== undefined && st.uid !== uid) {
     throw new Error(`認証情報のディレクトリ ${dir} の所有者が、このプロセスのユーザーと違う`);
   }
-  if ((st.mode & 0o022) !== 0) {
+  if ((permMode(st.mode) & 0o022) !== 0) {
     throw new Error(
       `認証情報のディレクトリ ${dir} が、グループ・他者から書き込める（0700 にする）: ${octal(st.mode)}`,
     );
   }
-  const why = acl(dir);
+  // Windows では、ほかの利用者の「読む・実行する」だけの許可は通す（POSIX の 0o022 に当たる）
+  const why = acl(dir, undefined, "noWrite");
   if (why !== undefined) throw new Error(`認証情報のディレクトリ ${dir} に、${why}`);
 }
 
@@ -49,7 +57,7 @@ export function assertSecureFile(
   if (uid !== undefined && st.uid !== uid) {
     throw new Error(`認証情報のファイル ${path} の所有者が、このプロセスのユーザーと違う`);
   }
-  if ((st.mode & 0o077) !== 0) {
+  if ((permMode(st.mode) & 0o077) !== 0) {
     throw new Error(`認証情報のファイル ${path} の権限が緩い（0600 にする）: ${octal(st.mode)}`);
   }
   const why = acl(path);

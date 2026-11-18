@@ -9,6 +9,7 @@
 import { isSafeId } from "./ids.js";
 import { isBoundedText, LIMITS } from "./limits.js";
 import type { Scope } from "./scope.js";
+import { isAbsolutePath } from "./scope.js";
 
 export interface Brief {
   readonly objective: string;
@@ -28,7 +29,7 @@ const hasDuplicate = (xs: readonly string[]): boolean => new Set(xs).size !== xs
 const badPath = (p: string): boolean =>
   p.split("/").some((seg) => seg === "..") || p.replace(/\/+/g, "/").trim() === "/";
 /** 絶対パス。範囲の場所は、作業ツリー内の相対パスに限る（作業ツリーはアダプタが決めるので、絶対パスは指定できない）。 */
-const isAbsolute = (p: string): boolean => p.startsWith("/") || p.startsWith("\\");
+const isAbsolute = (p: string): boolean => isAbsolutePath(p) || p.startsWith("\\");
 
 /** ブリーフの最初の問題を、短い説明で返す。問題がなければ `undefined`。例外は出さない。 */
 export function briefProblem(b: {

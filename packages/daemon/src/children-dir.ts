@@ -37,7 +37,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { NodeState } from "@touryou/core";
-import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+import { type AclCheck, defaultAclCheck, ownUid, permMode } from "@touryou/core/fs";
 
 export const CHILDREN_DIR = "children.noindex";
 /** 引き出しの中のファイルの名前（cli の `CHILD_FILES` と同じ）。 */
@@ -108,7 +108,7 @@ export interface ChildrenDirs {
   sweep(neededNodeIds: readonly string[]): { removed: number; failed: number };
 }
 
-const uid = (): number | undefined => process.getuid?.();
+const uid = (): number | undefined => ownUid();
 
 /** 0700 の、自分のもので、リンクでないディレクトリか。違えば例外（直さない）。 */
 function assertPrivateDir(path: string, what: string, acl: AclCheck): { dev: number; ino: number } {
@@ -118,8 +118,8 @@ function assertPrivateDir(path: string, what: string, acl: AclCheck): { dev: num
   const me = uid();
   if (me !== undefined && st.uid !== me)
     throw new ChildrenDirError(`${what}の所有者が、このプロセスのユーザーと違う`);
-  if ((st.mode & 0o077) !== 0)
-    throw new ChildrenDirError(`${what}の権限が 0700 でない（${(st.mode & 0o777).toString(8)}）`);
+  if ((permMode(st.mode) & 0o077) !== 0)
+    throw new ChildrenDirError(`${what}の権限が 0700 でない（${permMode(st.mode).toString(8)}）`);
   const aclWhy = acl(path);
   if (aclWhy !== undefined) throw new ChildrenDirError(`${what}に、${aclWhy}`);
   return { dev: st.dev, ino: st.ino };
@@ -145,7 +145,7 @@ function readSecret(path: string, acl: AclCheck): Buffer {
     if (!st.isFile()) throw new ChildrenDirError("引き出しの鍵のファイルが、通常のファイルでない");
     if (me !== undefined && st.uid !== me)
       throw new ChildrenDirError("引き出しの鍵のファイルの所有者が、このプロセスのユーザーと違う");
-    if ((st.mode & 0o077) !== 0)
+    if ((permMode(st.mode) & 0o077) !== 0)
       throw new ChildrenDirError("引き出しの鍵のファイルの権限が 0600 でない");
     const aclWhy = acl(path, fd);
     if (aclWhy !== undefined) throw new ChildrenDirError(`引き出しの鍵のファイルに、${aclWhy}`);

@@ -1,6 +1,15 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { evaluateScope, isScopeSubset, type Scope, validateScope } from "../src/index.js";
+import {
+  evaluateScope,
+  isAbsolutePath,
+  isPathUnder,
+  isScopeSubset,
+  normalizeAbsolutePath,
+  normalizePath,
+  type Scope,
+  validateScope,
+} from "../src/index.js";
 
 const CWD = "/work/node-a";
 const scope: Scope = {
@@ -517,6 +526,83 @@ describe("許可の項目の引用符（#91）", () => {
         { ...rel, allowedCommands: ["git grep"] },
         { ...rel, allowedCommands: [`git grep -E "A|B"`] },
       ),
+    ).toBe(false);
+  });
+});
+
+describe("Windows の形のパス（POSIX の形に読み替えて比べる）", () => {
+  const cwd = "C:\\Users\\me\\repo";
+  const scope: Scope = {
+    writableLocations: ["src", "docs\\notes"],
+    forbiddenLocations: ["src\\secret"],
+    allowedCommands: [],
+  };
+  const write = (path: string) => evaluateScope(scope, cwd, { kind: "write", path });
+  it("絶対パスの判定・読み替え・畳み方", () => {
+    expect(isAbsolutePath("C:\\a")).toBe(true);
+    expect(isAbsolutePath("c:/a")).toBe(true);
+    expect(isAbsolutePath("\\\\srv\\share\\a")).toBe(true);
+    expect(isAbsolutePath("/a")).toBe(true);
+    expect(isAbsolutePath("a\\b")).toBe(false);
+    expect(isAbsolutePath("C:a")).toBe(false);
+    expect(normalizePath("/", "C:\\a\\.\\b\\..\\c")).toBe("/C:/a/c");
+    expect(normalizePath(cwd, "src\\..\\x")).toBe("/C:/Users/me/repo/x");
+    expect(normalizePath("/", "\\\\srv\\share\\a")).toBe("/UNC/srv/share/a");
+    expect(isPathUnder("C:\\Users\\Me\\repo\\src", "c:/users/me/REPO")).toBe(true);
+    expect(isPathUnder("C:\\Users\\me\\repo2", "C:\\Users\\me\\repo")).toBe(false);
+    expect(isPathUnder("D:\\Users\\me\\repo", "C:\\Users\\me\\repo")).toBe(false);
+  });
+  it("normalizeAbsolutePath は、元の OS の形で返す。根だけ・絶対でないものは undefined", () => {
+    expect(normalizeAbsolutePath("C:/a//b/./c/..")).toBe("C:\\a\\b");
+    expect(normalizeAbsolutePath("\\\\srv\\share\\a\\..\\b")).toBe("\\\\srv\\share\\b");
+    expect(normalizeAbsolutePath("/a/./b")).toBe("/a/b");
+    for (const v of ["C:\\", "C:/x/..", "\\\\srv\\share", "/", "a/b", "C:a"]) {
+      expect(normalizeAbsolutePath(v), v).toBeUndefined();
+    }
+  });
+  it("作業ツリーが Windows の形でも、範囲の設定は妥当。書き込みは、許可・禁止の規則どおり", () => {
+    expect(validateScope(scope, cwd)).toEqual([]);
+    expect(write("src\\a.ts")).toEqual({ allowed: true });
+    expect(write("src/a.ts")).toEqual({ allowed: true });
+    expect(write("C:\\Users\\me\\repo\\docs\\notes\\x.md")).toEqual({ allowed: true });
+    expect(write("c:/users/ME/repo/src/a.ts")).toEqual({ allowed: true });
+    expect(write("src\\secret\\k")).toMatchObject({ allowed: false, reason: "forbiddenLocation" });
+    expect(write("SRC\\Secret\\k")).toMatchObject({ allowed: false, reason: "forbiddenLocation" });
+    expect(write("src\\..\\..\\x")).toMatchObject({ allowed: false, reason: "outsideWritable" });
+    expect(write("D:\\Users\\me\\repo\\src\\a")).toMatchObject({
+      allowed: false,
+      reason: "outsideWritable",
+    });
+    // 先頭が / のパスは、ドライブが分からないので、作業ツリーの外として拒む
+    expect(write("/Users/me/repo/src/a")).toMatchObject({ allowed: false });
+  });
+  it("別の名前が同じものを指す形は拒む: 末尾の . と空白・短い名前・ストリーム・\\\\?\\", () => {
+    for (const p of [
+      "src\\secret.\\k",
+      "src\\secret \\k",
+      "src\\SECRET~1\\k",
+      "src\\a.ts::$DATA",
+      "src\\secret:stream",
+      "\\\\?\\C:\\Users\\me\\repo\\src\\a",
+      "C:\\Users\\me\\repo\\src\\a.",
+    ]) {
+      expect(write(p), p).toMatchObject({ allowed: false, reason: "invalidPath" });
+    }
+    // . と .. の要素は、畳むだけ
+    expect(write("src\\.\\a.ts")).toEqual({ allowed: true });
+  });
+  it("範囲の設定: 作業ツリーの外・絶対パスの場所は不正。絶対パスが混じる範囲は、親に収まらない", () => {
+    expect(validateScope({ ...scope, writableLocations: ["..\\x"] }, cwd)).toMatchObject([
+      { problem: "writableOutsideCwd" },
+    ]);
+    expect(validateScope({ ...scope, writableLocations: ["D:\\x"] }, cwd)).toMatchObject([
+      { problem: "writableOutsideCwd" },
+    ]);
+    expect(validateScope(scope, "repo")).toMatchObject([{ field: "cwd", problem: "notAbsolute" }]);
+    const child: Scope = { ...scope, writableLocations: ["src\\a"] };
+    expect(isScopeSubset(child, scope, { child: cwd, parent: cwd })).toBe(true);
+    expect(
+      isScopeSubset({ ...child, writableLocations: ["C:\\x"] }, scope, { child: cwd, parent: cwd }),
     ).toBe(false);
   });
 });

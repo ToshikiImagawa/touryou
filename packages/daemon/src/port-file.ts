@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { type Failure, failure } from "@touryou/core";
-import { type AclCheck, defaultAclCheck } from "@touryou/core/fs";
+import { type AclCheck, defaultAclCheck, permMode } from "@touryou/core/fs";
 import { processUid } from "./api/fs-safety.js";
 
 export const PORT_FILE = "port";
@@ -87,7 +87,8 @@ export function readSavedPort(
     if (!st.isFile()) throw invalidFile("通常のファイルでない");
     if (uid !== undefined && st.uid !== uid)
       throw invalidFile("所有者が、このプロセスのユーザーと違う");
-    if ((st.mode & 0o077) !== 0) throw invalidFile(`権限が緩い: ${(st.mode & 0o777).toString(8)}`);
+    if ((permMode(st.mode) & 0o077) !== 0)
+      throw invalidFile(`権限が緩い: ${permMode(st.mode).toString(8)}`);
     const aclWhy = (ops.acl ?? defaultAclCheck)(path, fd);
     if (aclWhy !== undefined) throw invalidFile(aclWhy);
     text = readFileSync(fd, "utf8");

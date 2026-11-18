@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { isSafeId } from "@touryou/core";
+import { fsyncDir, permMode } from "@touryou/core/fs";
 import { assertSecureDirectory, processUid, readSecureSecret } from "./fs-safety.js";
 
 export interface TokenRecord {
@@ -78,7 +79,7 @@ export function isTokenRecord(x: unknown): x is TokenRecord {
 }
 
 /** グループ・他者に権限があるか。 */
-export const isLoosePermission = (mode: number): boolean => (mode & 0o077) !== 0;
+export const isLoosePermission = (mode: number): boolean => (permMode(mode) & 0o077) !== 0;
 
 export class FileTokenRepository implements TokenRepository {
   private records: Map<string, TokenRecord> | undefined;
@@ -184,12 +185,7 @@ export class FileTokenRepository implements TokenRepository {
     chmodSync(tmp, 0o600);
     renameSync(tmp, this.path);
     // rename を永続にするため、ディレクトリも fsync する。
-    const dfd = openSync(dir, "r");
-    try {
-      fsyncSync(dfd);
-    } finally {
-      closeSync(dfd);
-    }
+    fsyncDir(dir);
   }
 }
 

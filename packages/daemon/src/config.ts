@@ -14,9 +14,10 @@ import {
   briefProblem,
   type Failure,
   failure,
+  isAbsolutePath,
   isPathUnder,
   isSafeId,
-  normalizePath,
+  normalizeAbsolutePath,
   type Result,
   type Scope,
   validateScope,
@@ -275,10 +276,10 @@ const isRec = (x: unknown): x is Record<string, unknown> =>
 
 /** 絶対パスで、`..`・NUL を含まず、`/` だけでないこと。正規化した値を返す。 */
 function absPath(v: unknown): string | undefined {
-  if (typeof v !== "string" || !v.startsWith("/") || v.includes("\0")) return undefined;
-  if (v.split("/").some((s) => s === "..")) return undefined;
-  const n = normalizePath("/", v);
-  return n === "/" ? undefined : n;
+  if (typeof v !== "string" || !isAbsolutePath(v) || v.includes("\0")) return undefined;
+  // Windows の絶対パス（`C:\...`）は、`\` も区切りとして見る
+  if (v.split(v.startsWith("/") ? "/" : /[\\/]/).some((s) => s === "..")) return undefined;
+  return normalizeAbsolutePath(v);
 }
 
 const overlaps = (a: string, b: string): boolean => isPathUnder(a, b) || isPathUnder(b, a);
@@ -593,13 +594,13 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
     const v = raw.touryouCommand;
     const word = /^[A-Za-z0-9._/@:+=-]{1,1024}$/;
     const absOk = (x: string): boolean =>
-      !x.includes("/") || (x.startsWith("/") && !x.split("/").includes(".."));
+      !x.includes("/") || (isAbsolutePath(x) && !x.split("/").includes(".."));
     if (
       !Array.isArray(v) ||
       v.length < 1 ||
       v.length > 4 ||
       !v.every((x) => typeof x === "string" && word.test(x) && absOk(x)) ||
-      !(v as string[]).some((x) => x.startsWith("/"))
+      !(v as string[]).some((x) => isAbsolutePath(x))
     ) {
       return bad(
         "touryouCommand は、touryou を起動する語の配列（1〜4 語。英数字と . _ / @ : + = - だけ。/ を含む語は絶対パスで、絶対パスの語が 1 つ以上）",
@@ -664,7 +665,7 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
     if (
       !Array.isArray(v) ||
       v.length > 20 ||
-      !v.every((x) => typeof x === "string" && x.length <= 4096 && x.startsWith("/"))
+      !v.every((x) => typeof x === "string" && x.length <= 4096 && isAbsolutePath(x))
     ) {
       return bad("claudeConfigDirs は、絶対パスの配列（20 件以下）");
     }
@@ -823,7 +824,7 @@ export function loadConfigFile(
   path: string,
   ops: { readonly acl?: AclCheck } = {},
 ): Result<DaemonConfig, Failure> {
-  if (typeof path !== "string" || !path.startsWith("/")) {
+  if (typeof path !== "string" || !isAbsolutePath(path)) {
     return bad("設定ファイルは、絶対パスで指定する");
   }
   // 設定ファイルは、他のユーザーが書き換えられないこと（通常のファイルで、グループ・他者の書き込み権限がない・ACL がない）。
