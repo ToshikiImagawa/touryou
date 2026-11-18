@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   renameSync,
@@ -105,9 +106,28 @@ describe("Windows の ACL（SDDL の判定。どの OS でも動く）", () => {
     }
   });
   it("aclProblem（win32）: 道具を差し替えて確かめる。厳しさを渡す", () => {
+    const { d, p } = file();
     const win = { sddl: () => `${own}(A;ID;0x1200a9;;;BU)`, selfSid: () => ME };
-    expect(aclProblem("C:\\p", { platform: "win32", win })).toContain("ほかの利用者");
-    expect(aclProblem("C:\\p", { platform: "win32", win, level: "noWrite" })).toBeUndefined();
+    expect(aclProblem(p, { platform: "win32", win })).toContain("ほかの利用者");
+    expect(aclProblem(p, { platform: "win32", win, level: "noWrite" })).toBeUndefined();
+    // ないもの・リンクは、ACL が締まっていても確かめられない
+    const tight = { sddl: () => own, selfSid: () => ME };
+    expect(aclProblem(p, { platform: "win32", win: tight })).toBeUndefined();
+    expect(aclProblem(join(d, "none"), { platform: "win32", win: tight })).toContain(WHY);
+    const link = join(d, "link");
+    if (trySymlink(p, link)) {
+      expect(aclProblem(link, { platform: "win32", win: tight })).toContain(WHY);
+    }
+  });
+  it("OWNER RIGHTS は信頼しない。32 ビットを超える権利・DACL がないものは拒む", () => {
+    expect(winAclProblemOfSddl(`D:(A;;FA;;;${ME})(A;;FA;;;OW)`, ME)).toContain("ほかの利用者");
+    expect(winAclProblemOfSddl(`D:(A;;FA;;;${ME})(A;;FA;;;S-1-3-4)`, ME)).toContain("ほかの利用者");
+    expect(winAclProblemOfSddl(`${own}(A;;0x1001200a9;;;WD)`, ME, "noWrite")).toContain(
+      "書き込める",
+    );
+    expect(winAclProblemOfSddl(`${own}(A;;0x001200a9;;;WD)`, ME, "noWrite")).toBeUndefined();
+    expect(winAclProblemOfSddl("D:PAINO_ACCESS_CONTROL", ME)).toContain("ACL がない");
+    expect(winAclProblemOfSddl("D:NO_ACCESS_CONTROL", ME, "noWrite")).toContain("ACL がない");
   });
   it("modeString（win32）: ACL から ls の形を作る。書ける許可があれば +", () => {
     const { d, p } = file();
@@ -143,6 +163,18 @@ describe.runIf(isWin)("Windows の本物のファイル（icacls）", () => {
     expect(() => readSecureFile(p, { forbid: 0o077, maxBytes: 64 })).toThrow(SecureFileError);
     icacls(p, "/grant", "*S-1-1-0:(M)");
     expect(aclProblem(p, { level: "noWrite" })).toContain("書き込める");
+  });
+  it("icacls が別のものを見る形（末尾の . と空白・* と ?）と、ジャンクションは拒む", () => {
+    const { d, p } = file();
+    for (const v of [`${p}.`, `${p} `, join(d, "*.txt"), join(d, "?.txt"), join(d, "sub.", "x")]) {
+      expect(aclProblem(v), v).toContain(WHY);
+    }
+    const target = join(d, "target");
+    mkdirSync(target);
+    const junction = join(d, "junction");
+    symlinkSync(target, junction, "junction");
+    expect(aclProblem(target)).toBeUndefined();
+    expect(aclProblem(junction)).toContain(WHY);
   });
   it("fd を渡すと、通ったものを覚える。ACL を付け替えると（ctime が変わり）確かめ直す", () => {
     const { p } = file();

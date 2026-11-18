@@ -69,8 +69,10 @@ export const isAbsolutePath = (path: string): boolean => path.startsWith("/") ||
  * Windows の絶対パスを、POSIX の形に読み替える（`C:\a\b` → `/C:/a/b`、`\\srv\share\a` → `/UNC/srv/share/a`）。
  * 比べるための形で、ファイルを開くのには使わない。Windows の絶対パスでなければ、そのまま返す。
  */
-function posixForm(path: string): string {
-  if (!isWinAbs(path)) return path;
+function posixForm(raw: string): string {
+  if (!isWinAbs(raw)) return raw;
+  // `\\?\C:\a` は `C:\a`、`\\?\UNC\srv\share` は `\\srv\share` と同じものを指す
+  const path = raw.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, "\\\\").replace(/^[\\/]{2}\?[\\/]/, "");
   const s = path.replace(/\\/g, "/");
   return s.startsWith("//") ? `/UNC/${s.replace(/^\/+/, "")}` : `/${s}`;
 }
@@ -81,10 +83,14 @@ function posixForm(path: string): string {
  * - `:`（ドライブ文字の後のほか。代替データストリーム `file:stream`）
  * - `~<数字>`（8.3 形式の短い名前。`SECRET~1`）
  * - `\\?\`・`\\.\`（正規化を通らない形・デバイス）
+ * - `C:foo`（ドライブ相対。そのドライブの今の場所が基準で、作業ツリーとは関係がない。`:` として拒む）
+ * - `\foo`・`/foo`（区切り 1 つで始まる。今のドライブの根が基準で、どのドライブかが決まらない）
  */
 function hasWinAlias(path: string): boolean {
   if (/^[\\/]{2}[?.][\\/]/.test(path)) return true;
-  const rest = path.replace(/^[A-Za-z]:/, "");
+  if (/^[\\/](?![\\/])/.test(path)) return true;
+  // ドライブ文字を外すのは、後ろに区切りが続くとき（絶対パス）だけ
+  const rest = path.replace(/^[A-Za-z]:(?=[\\/])/, "");
   if (rest.includes(":")) return true;
   return rest
     .split(/[\\/]/)
@@ -94,17 +100,25 @@ function hasWinAlias(path: string): boolean {
 /**
  * `cwd` を基準に絶対化し、`.` と `..` を畳む（POSIX 区切り）。
  * `cwd` か `path` が Windows の絶対パスのときは、POSIX の形に読み替えてから畳む（`cwd` が Windows の形なら、
- * 相対パスの `\` も区切りとして扱う）。
+ * 相対パスの `\` も区切りとして扱う）。Windows の形のときは、`..` で根（`C:`・`UNC/srv/share`）より上には行かない
+ * （Windows は根で止まる。越えて畳むと、別のドライブや別の共有を指す形に化ける）。
  */
 function normalize(cwd: string, path: string): string {
   const parts: string[] = [];
+  const win = isWinAbs(cwd) || isWinAbs(path);
   const base = posixForm(cwd);
   const p = isWinAbs(path) ? posixForm(path) : isWinAbs(cwd) ? path.replace(/\\/g, "/") : path;
   const full = p.startsWith("/") ? p : `${base}/${p}`;
+  const rootLen = (): number => {
+    if (!win) return 0;
+    if (/^[A-Za-z]:$/.test(parts[0] ?? "")) return 1;
+    return parts[0] === "UNC" ? 3 : 0;
+  };
   for (const seg of full.split("/")) {
     if (seg === "" || seg === ".") continue;
-    if (seg === "..") parts.pop();
-    else parts.push(seg);
+    if (seg === "..") {
+      if (parts.length > rootLen()) parts.pop();
+    } else parts.push(seg);
   }
   return `/${parts.join("/")}`;
 }
@@ -128,9 +142,10 @@ export function normalizeAbsolutePath(path: string): string | undefined {
 const fold = (path: string): string => path.normalize("NFC").toLowerCase().normalize("NFC");
 
 const isUnder = (path: string, dir: string): boolean => {
-  const p = fold(posixForm(path));
-  const d = fold(posixForm(dir));
-  return d === "/" || p === d || p.startsWith(`${d}/`);
+  // 末尾の区切りは外して比べる（`C:\` は `/C:`、`/` は空になる。空は、すべてを含む根）
+  const p = fold(posixForm(path)).replace(/\/+$/, "");
+  const d = fold(posixForm(dir)).replace(/\/+$/, "");
+  return d === "" || p === d || p.startsWith(`${d}/`);
 };
 
 const hasNul = (s: string): boolean => s.includes("\0");

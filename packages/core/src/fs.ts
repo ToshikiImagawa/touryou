@@ -111,9 +111,12 @@ let cachedSelfSid: string | undefined;
 /** 既定の道具（`icacls /save` と `whoami /user`）。 */
 export const defaultWinAcl: WinAclRunner = {
   sddl: (path) => {
+    const full = resolve(path);
+    // icacls は `*`・`?` を展開し、要素の末尾の `.`・空白を取り除く（Node が開くのとは別のファイルを見る）。確かめられないとして拒む
+    if (/[*?]/.test(full) || full.split(/[\\/]/).some((seg) => /[. ]$/.test(seg))) return undefined;
     const out = join(tmpdir(), `touryou-acl-${process.pid}-${randomBytes(8).toString("hex")}.txt`);
     try {
-      const r = spawnSync(winTool("icacls.exe"), [resolve(path), "/save", out], {
+      const r = spawnSync(winTool("icacls.exe"), [full, "/save", out], {
         encoding: "utf8",
         timeout: LS_TIMEOUT_MS,
         windowsHide: true,
@@ -149,23 +152,21 @@ export const defaultWinAcl: WinAclRunner = {
   },
 };
 
-/** いつも許す相手（SYSTEM・Administrators・CREATOR OWNER・OWNER RIGHTS）。SDDL の別名と SID の両方。 */
-const WIN_TRUSTED = new Set([
-  "SY",
-  "BA",
-  "CO",
-  "OW",
-  "S-1-5-18",
-  "S-1-5-32-544",
-  "S-1-3-0",
-  "S-1-3-4",
-]);
+/**
+ * いつも許す相手（SYSTEM・Administrators・CREATOR OWNER）。SDDL の別名と SID の両方。
+ * CREATOR OWNER は、継承のひな形で、そのもの自体には誰にも当たらない。
+ * OWNER RIGHTS（`OW`）は入れない（持ち主が自分とは限らない。持ち主は確かめていない）。
+ */
+const WIN_TRUSTED = new Set(["SY", "BA", "CO", "S-1-5-18", "S-1-5-32-544", "S-1-3-0"]);
 /** 「読む・実行する」だけの権利（FILE_GENERIC_READ | FILE_GENERIC_EXECUTE）。 */
 const WIN_READ_MASK = 0x1200a9;
 const WIN_READ_CODES = new Set(["FR", "FX", "GR", "GX"]);
 
 function winRightsReadOnly(rights: string): boolean {
-  if (/^0x[0-9a-f]+$/i.test(rights)) return (Number.parseInt(rights, 16) & ~WIN_READ_MASK) === 0;
+  // 権利は 32 ビット。それより長い 16 進は、ビット演算で上の桁が落ちるので拒む
+  if (/^0x[0-9a-f]+$/i.test(rights)) {
+    return rights.length <= 10 && (Number.parseInt(rights, 16) & ~WIN_READ_MASK) === 0;
+  }
   if (rights === "" || rights.length % 2 !== 0) return false;
   for (let i = 0; i < rights.length; i += 2) {
     if (!WIN_READ_CODES.has(rights.slice(i, i + 2))) return false;
@@ -185,6 +186,9 @@ export function winAclProblemOfSddl(
 ): string | undefined {
   const unknown = "ACL を確かめられない（icacls・whoami が失敗した・時間切れ・出力が想定外）";
   if (sddl === undefined || selfSid === undefined || !/^S-1-[0-9-]+$/.test(selfSid)) return unknown;
+  // DACL がない（誰でも何でもできる）
+  if (sddl.includes("NO_ACCESS_CONTROL"))
+    return "ACL がない（誰でも読み書きできる。icacls で付ける）";
   const m = /^D:([A-Z]*)((?:\([^()]*\))*)$/.exec(sddl);
   if (m === null) return unknown;
   for (const ace of (m[2] ?? "").match(/\([^()]*\)/g) ?? []) {
@@ -329,16 +333,22 @@ export function aclProblem(path: string, ops: AclOps = {}): string | undefined {
   }
   if ((ops.platform ?? process.platform) === "win32") {
     const win = ops.win ?? defaultWinAcl;
+    // icacls の前と後で、同じもの（リンクでない）であることを確かめる。リンク・ジャンクションは、
+    // リンク自身の ACL しか読めない（指す先の ACL は分からない）ので拒む
+    const look = (): bigint | undefined => {
+      try {
+        const st = lstatSync(path, { bigint: true });
+        return st.isSymbolicLink() ? undefined : st.ino;
+      } catch {
+        return undefined;
+      }
+    };
+    const before = look();
+    if (before === undefined) return "ACL を確かめられない（ない・リンク・ジャンクション）";
     const why = winAclProblemOfSddl(win.sddl(path), win.selfSid(), ops.level);
     if (why !== undefined) return why;
-    if (ino !== undefined) {
-      let now: bigint | undefined;
-      try {
-        now = lstatSync(path, { bigint: true }).ino;
-      } catch {
-        now = undefined;
-      }
-      if (now !== ino) return "ACL を確かめられない（確かめたものと、開いたものが違う）";
+    if (look() !== before || (ino !== undefined && before !== ino)) {
+      return "ACL を確かめられない（確かめたものと、開いたものが違う）";
     }
     if (key !== undefined) {
       if (verified.size >= CACHE_MAX) verified.clear();

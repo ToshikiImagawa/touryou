@@ -591,6 +591,55 @@ describe("Windows の形のパス（POSIX の形に読み替えて比べる）",
     // . と .. の要素は、畳むだけ
     expect(write("src\\.\\a.ts")).toEqual({ allowed: true });
   });
+  it("ドライブ相対（C:foo）と、区切り 1 つで始まるパスは拒む（作業ツリーが基準にならない）", () => {
+    const all: Scope = {
+      writableLocations: ["."],
+      forbiddenLocations: ["src\\secret"],
+      allowedCommands: [],
+    };
+    const w = (path: string) => evaluateScope(all, cwd, { kind: "write", path });
+    for (const p of ["C:..\\..\\src\\x", "C:src\\secret\\key", "D:evil.txt", "c:x"]) {
+      expect(write(p), p).toMatchObject({ allowed: false, reason: "invalidPath" });
+      expect(w(p), p).toMatchObject({ allowed: false, reason: "invalidPath" });
+    }
+    for (const p of [
+      "\\Users\\me\\repo\\src\\a",
+      "/Users/me/repo/src/a",
+      "/C:/Users/me/repo/src/a",
+    ]) {
+      expect(write(p), p).toMatchObject({ allowed: false, reason: "invalidPath" });
+    }
+  });
+  it(".. は、ドライブ・共有の根より上には行かない", () => {
+    expect(normalizePath("/", "C:\\a\\..\\..\\x")).toBe("/C:/x");
+    expect(normalizePath("/", "C:\\..\\UNC\\srv\\share\\x")).toBe("/C:/UNC/srv/share/x");
+    expect(normalizePath("/", "\\\\srv\\share\\..\\other\\x")).toBe("/UNC/srv/share/other/x");
+    expect(normalizeAbsolutePath("C:\\a\\..\\..\\x")).toBe("C:\\x");
+    expect(normalizeAbsolutePath("C:\\a\\..\\..\\UNC\\evil\\share\\x")).toBe(
+      "C:\\UNC\\evil\\share\\x",
+    );
+    expect(normalizeAbsolutePath("\\\\srv\\share\\..\\other\\x")).toBe("\\\\srv\\share\\other\\x");
+    // POSIX の形は、いままでどおり根まで畳む
+    expect(normalizePath("/", "/a/../../x")).toBe("/x");
+    const unc = "\\\\srv\\share\\work";
+    const s: Scope = { writableLocations: ["src"], forbiddenLocations: [], allowedCommands: [] };
+    for (const p of ["C:\\..\\UNC\\srv\\share\\work\\src\\x", "/UNC/srv/share/work/src/x"]) {
+      expect(evaluateScope(s, unc, { kind: "write", path: p }), p).toMatchObject({
+        allowed: false,
+      });
+    }
+    expect(evaluateScope(s, unc, { kind: "write", path: "src\\x" })).toEqual({ allowed: true });
+  });
+  it("配下の判定: 根・末尾の区切り・\\\\?\\ の形でも同じ答え", () => {
+    expect(isPathUnder("C:\\x", "C:\\")).toBe(true);
+    expect(isPathUnder("C:\\a\\b", "C:\\a\\")).toBe(true);
+    expect(isPathUnder("C:\\ab", "C:\\a\\")).toBe(false);
+    expect(isPathUnder("\\\\?\\C:\\st\\wt", "C:\\st")).toBe(true);
+    expect(isPathUnder("\\\\?\\UNC\\srv\\share\\a", "\\\\srv\\share")).toBe(true);
+    expect(isPathUnder("D:\\x", "C:\\")).toBe(false);
+    expect(isPathUnder("/a/b", "/a/")).toBe(true);
+    expect(isPathUnder("/a/b", "/")).toBe(true);
+  });
   it("範囲の設定: 作業ツリーの外・絶対パスの場所は不正。絶対パスが混じる範囲は、親に収まらない", () => {
     expect(validateScope({ ...scope, writableLocations: ["..\\x"] }, cwd)).toMatchObject([
       { problem: "writableOutsideCwd" },
