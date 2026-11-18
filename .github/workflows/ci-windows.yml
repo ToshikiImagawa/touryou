@@ -1,0 +1,46 @@
+name: CI (Windows)
+
+# Windows の対応を進めるための check（まだ通らない。必須の check にしない）。
+# self-hosted の Windows の runner（org の runner。ラベル self-hosted・Windows・X64）で動かす。
+# 手で実行したとき（workflow_dispatch）と、windows/** のブランチへの push のときだけ
+# （main に入る前でも、ブランチの push で試せるように。push できるのは、このリポジトリに書き込める人だけ）。
+# public のリポジトリなので、pull_request では動かさない
+# （fork の PR のコードを、self-hosted の機械で走らせない。docs/release.md の「CI のワークフロー」）。
+on:
+  workflow_dispatch:
+  push:
+    branches: ["windows/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (windows, node 22)
+    # fork では動かさない（fork には、この runner がない）
+    if: github.repository == 'comcreate/touryou'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    defaults:
+      run:
+        # Git for Windows の bash（runner の PATH で、WSL の bash より前にあること）
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: runner の git・bash を記録する（情報のみ。git は 2.18 以上、bash は MINGW であること）
+        run: |
+          git --version
+          bash --version | head -n 1
+          uname -s
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: bash scripts/check.sh

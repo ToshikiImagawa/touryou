@@ -1,0 +1,2 @@
+# 改行は、どの OS でも LF で取り出す（Windows の core.autocrlf で CRLF になると、biome の整形の検査が落ちる）
+* text=auto eol=lf
