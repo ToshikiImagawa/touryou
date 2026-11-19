@@ -67,8 +67,10 @@ export function readSeedList(repoRoot: string): Result<readonly string[], Failur
     }
     if (n === ".git" || n.startsWith(`.git${sep}`))
       return bad("files に、.git の中を指すものがある");
-    if (seen.has(n)) return bad("files に、重複がある");
-    seen.add(n);
+    // 名前は `/` の形で持つ（git status の出力と照らすため。Windows の normalize は `\` にする）
+    const name = sep === "/" ? n : n.replaceAll(sep, "/");
+    if (seen.has(name)) return bad("files に、重複がある");
+    seen.add(name);
   }
   return { ok: true, value: [...seen] };
 }
