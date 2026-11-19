@@ -295,12 +295,15 @@ export function prepareChildrenDirs(
           closeSync(fd);
         }
         renameSync(tmp, join(dir, name));
-        // rename を確かに残す（ディレクトリの fsync）
-        const dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
-        try {
-          fsyncSync(dfd);
-        } finally {
-          closeSync(dfd);
+        // rename を確かに残す（ディレクトリの fsync）。Windows では、ディレクトリのハンドルを fsync できない（EPERM）ので、
+        // しない（NTFS は、名前の変更をジャーナルに書く。core の fsyncDir と同じ扱い）
+        if (process.platform !== "win32") {
+          const dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+          try {
+            fsyncSync(dfd);
+          } finally {
+            closeSync(dfd);
+          }
         }
       } catch (e) {
         try {
