@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runBin } from "../src/bin.js";
 import { stateDirOf } from "../src/launchd.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const made: string[] = [];
@@ -23,16 +24,19 @@ const config = () => {
 };
 
 describe("config.json の確かめ", () => {
-  it("launchd: 0600 の自分のファイルは読む。他の人が書ける・リンクは読まない", () => {
-    const a = config();
-    expect(stateDirOf(a.p)).toBe(join(a.d, "state"));
-    chmodSync(a.p, 0o666);
-    expect(stateDirOf(a.p)).toBeUndefined();
-    const b = config();
-    const link = join(b.d, "link.json");
-    symlinkSync(b.p, link);
-    expect(stateDirOf(link)).toBeUndefined();
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "launchd: 0600 の自分のファイルは読む。他の人が書ける・リンクは読まない",
+    () => {
+      const a = config();
+      expect(stateDirOf(a.p)).toBe(join(a.d, "state"));
+      chmodSync(a.p, 0o666);
+      expect(stateDirOf(a.p)).toBeUndefined();
+      const b = config();
+      const link = join(b.d, "link.json");
+      symlinkSync(b.p, link);
+      expect(stateDirOf(link)).toBeUndefined();
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)(
     "touryou（TOURYOU_DAEMON_CONFIG）: 他の人が書ける・リンクの設定なら、トークンを送らずに使い方の誤り",

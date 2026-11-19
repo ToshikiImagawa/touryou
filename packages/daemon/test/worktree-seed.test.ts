@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createGitPorts, nodeGit } from "../src/git-ports.js";
+import { fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -77,7 +78,7 @@ describe("作業ツリーへの設定ファイルのコピー", () => {
     const wt = r.value.worktreePath;
     expect(readFileSync(join(wt, ".envrc"), "utf8")).toBe("export A=1\n");
     expect(existsSync(join(wt, ".claude", "settings.local.json"))).toBe(true);
-    expect(statSync(join(wt, ".envrc")).mode & 0o777).toBe(0o600);
+    expect(fileMode(join(wt, ".envrc"))).toBe(0o600);
     expect(events).toEqual([
       {
         nodeId: "c1",

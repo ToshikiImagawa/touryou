@@ -15,9 +15,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runHook } from "../src/hook.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const isMac = process.platform === "darwin";
@@ -97,7 +98,7 @@ describe("touryou hook の設定・port の確かめ", () => {
     ],
   ];
   for (const [name, brk] of breakers) {
-    it.skipIf(name.endsWith("リンク") && !CAN_SYMLINK)(
+    it.skipIf(name.endsWith("リンク") ? !CAN_SYMLINK : !CHMOD_LOOSENS)(
       `${name}: 印のある作業ツリーでは拒み（送らない）、印のないところでは黙って通す`,
       async () => {
         const x = setup();

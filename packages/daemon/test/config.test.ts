@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfigFile, parseConfig } from "../src/config.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 
 const base = {
   stateDir: "/var/touryou/state",
@@ -497,7 +498,7 @@ describe("loadConfigFile", () => {
     expect(loadConfigFile("relative.json").ok).toBe(false);
   });
 
-  it("他のユーザーが書き換えられるファイル・リンクは拒否する", () => {
+  it.skipIf(!CHMOD_LOOSENS)("他のユーザーが書き換えられるファイル・リンクは拒否する", () => {
     const dir = mkdtempSync(join(tmpdir(), "touryou-cfg-"));
     const p = join(dir, "daemon.json");
     writeFileSync(p, JSON.stringify(base));

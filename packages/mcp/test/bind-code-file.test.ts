@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BIND_CODE_FILE, readCodeFile } from "../src/bind-code-file.js";
 import { proofOf } from "../src/identity.js";
 import { openPendingStdioSession } from "../src/stdio.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const CODE = "0123456789ABCDEFGHJKMNPQRS";
@@ -52,7 +53,7 @@ describe("コードのファイルを読む前の確かめ", () => {
     expect(r.ok && r.code).toBe(CODE);
   });
 
-  it("権限が 0600 でない・持ち主が違う・リンク・ない、は読まない", () => {
+  it.skipIf(!CHMOD_LOOSENS)("権限が 0600 でない・持ち主が違う・リンク・ない、は読まない", () => {
     const t = tree();
     putCode(t.codePath, CODE, 0o644);
     expect(readCodeFile(t.wt)).toMatchObject({ ok: false, reason: "unsafe" });
@@ -149,18 +150,21 @@ describe("child_bind を引数なしで呼ぶ（紐付け待ちのセッショ�
     expect(existsSync(t.codePath)).toBe(false);
   });
 
-  it("ファイルがない・安全でないときは daemon に送らず、やり直しを頼む手順を返す。片方だけの引数は受けない", async () => {
-    const t = tree();
-    const s = await session(t, () => 200);
-    const r = await s.bind();
-    expect(r.isError).toBe(true);
-    expect(JSON.parse(r.content[0]?.text ?? "{}").code).toBe("bind_code_file_unavailable");
-    putCode(t.codePath, CODE, 0o640);
-    expect((await s.bind()).isError).toBe(true);
-    expect(s.sent).toHaveLength(0);
-    expect((await s.bind({ nodeId: "a" })).isError).toBe(true);
-    expect(s.sent).toHaveLength(0);
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "ファイルがない・安全でないときは daemon に送らず、やり直しを頼む手順を返す。片方だけの引数は受けない",
+    async () => {
+      const t = tree();
+      const s = await session(t, () => 200);
+      const r = await s.bind();
+      expect(r.isError).toBe(true);
+      expect(JSON.parse(r.content[0]?.text ?? "{}").code).toBe("bind_code_file_unavailable");
+      putCode(t.codePath, CODE, 0o640);
+      expect((await s.bind()).isError).toBe(true);
+      expect(s.sent).toHaveLength(0);
+      expect((await s.bind({ nodeId: "a" })).isError).toBe(true);
+      expect(s.sent).toHaveLength(0);
+    },
+  );
 
   it("道具の入力の形: 引数は任意（required なし）", async () => {
     const t = tree();

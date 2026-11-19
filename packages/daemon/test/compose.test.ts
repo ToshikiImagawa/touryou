@@ -43,6 +43,7 @@ import type { DaemonConfig } from "../src/config.js";
 import { EventLog } from "../src/eventlog.js";
 import { EXTERNAL_CHECK_SUMMARY } from "../src/external-check.js";
 import { openSqliteStore } from "../src/sqlite-store.js";
+import { CHMOD_LOOSENS, fileMode } from "./file-mode.js";
 import { FakeCliAdapter, type FakeCliSession } from "./sdk/fakes.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
@@ -157,9 +158,9 @@ describe("createDaemon（組み立てて、窓口まで起動する）", () => {
   it("根のノードを作り、トークンのファイルを 0600 で置き、窓口で呼べる", async () => {
     const r = rig();
     const d = await boot(r);
-    expect(statSync(join(r.config.stateDir, "human-token")).mode & 0o777).toBe(0o600);
-    expect(statSync(join(r.config.stateDir, "root-token")).mode & 0o777).toBe(0o600);
-    expect(statSync(r.config.stateDir).mode & 0o777).toBe(0o700);
+    expect(fileMode(join(r.config.stateDir, "human-token"))).toBe(0o600);
+    expect(fileMode(join(r.config.stateDir, "root-token"))).toBe(0o600);
+    expect(fileMode(r.config.stateDir)).toBe(0o700);
     const list = await call(d.url, d.rootToken, "tree.list", {});
     expect(list.status).toBe(200);
     expect(JSON.stringify(list.json.value)).toContain("root");
@@ -339,24 +340,27 @@ describe("createDaemon（組み立てて、窓口まで起動する）", () => {
     }
     expect(seen).toEqual([r.config.stateDir]);
   });
-  it("置き場の権限が緩い・根の役割が違う・ストアが壊れているときは、起動に失敗する（例外にしない）", async () => {
-    const loose = rig();
-    mkdirSync(loose.config.stateDir, { mode: 0o777 });
-    // umask の影響を避けて、明示的に緩くする
-    const { chmodSync } = await import("node:fs");
-    chmodSync(loose.config.stateDir, 0o777);
-    const a = createDaemon(loose.config, loose.deps);
-    expect(a.ok).toBe(false);
-    if (!a.ok) expect(a.error.code).toBe("stateDirInvalid");
+  it.skipIf(!CHMOD_LOOSENS)(
+    "置き場の権限が緩い・根の役割が違う・ストアが壊れているときは、起動に失敗する（例外にしない）",
+    async () => {
+      const loose = rig();
+      mkdirSync(loose.config.stateDir, { mode: 0o777 });
+      // umask の影響を避けて、明示的に緩くする
+      const { chmodSync } = await import("node:fs");
+      chmodSync(loose.config.stateDir, 0o777);
+      const a = createDaemon(loose.config, loose.deps);
+      expect(a.ok).toBe(false);
+      if (!a.ok) expect(a.error.code).toBe("stateDirInvalid");
 
-    const r = rig();
-    const first = await boot(r);
-    await first.daemon.stop();
-    cleanups.length = 0;
-    const mismatch = createDaemon({ ...r.config, rootNodeId: "root" }, r.deps);
-    expect(mismatch.ok).toBe(true); // 同じ設定なら開ける
-    if (mismatch.ok) await mismatch.value.stop();
-  });
+      const r = rig();
+      const first = await boot(r);
+      await first.daemon.stop();
+      cleanups.length = 0;
+      const mismatch = createDaemon({ ...r.config, rootNodeId: "root" }, r.deps);
+      expect(mismatch.ok).toBe(true); // 同じ設定なら開ける
+      if (mismatch.ok) await mismatch.value.stop();
+    },
+  );
 
   it("根のノード ID が、根でないノードを指していたら、起動に失敗する", async () => {
     const r = rig();
@@ -379,23 +383,26 @@ describe("createDaemon（組み立てて、窓口まで起動する）", () => {
 });
 
 describe("起動の安全", () => {
-  it("stateDir が 0700 でなければ（0755 など）起動に失敗する。SQLite のファイルは 0600", async () => {
-    const loose = rig();
-    mkdirSync(loose.config.stateDir);
-    chmodSync(loose.config.stateDir, 0o755);
-    const a = createDaemon(loose.config, loose.deps);
-    expect(a.ok).toBe(false);
-    if (!a.ok) expect(a.error.code).toBe("stateDirInvalid");
+  it.skipIf(!CHMOD_LOOSENS)(
+    "stateDir が 0700 でなければ（0755 など）起動に失敗する。SQLite のファイルは 0600",
+    async () => {
+      const loose = rig();
+      mkdirSync(loose.config.stateDir);
+      chmodSync(loose.config.stateDir, 0o755);
+      const a = createDaemon(loose.config, loose.deps);
+      expect(a.ok).toBe(false);
+      if (!a.ok) expect(a.error.code).toBe("stateDirInvalid");
 
-    const r = rig();
-    const d = await boot(r);
-    for (const f of ["state.db", "state.db-wal", "state.db-shm"]) {
-      const p = join(r.config.stateDir, f);
-      if (existsSync(p)) expect(statSync(p).mode & 0o777, f).toBe(0o600);
-    }
-    expect(existsSync(join(r.config.stateDir, "state.db"))).toBe(true);
-    expect(d.daemon.log.state().nodes).toHaveLength(1);
-  });
+      const r = rig();
+      const d = await boot(r);
+      for (const f of ["state.db", "state.db-wal", "state.db-shm"]) {
+        const p = join(r.config.stateDir, f);
+        if (existsSync(p)) expect(fileMode(p), f).toBe(0o600);
+      }
+      expect(existsSync(join(r.config.stateDir, "state.db"))).toBe(true);
+      expect(d.daemon.log.state().nodes).toHaveLength(1);
+    },
+  );
 
   it("根が作成だけで止まっていた（pending）なら、開始を記録する。使えない状態なら失敗する", async () => {
     const r = rig();
@@ -443,7 +450,7 @@ describe("起動の安全", () => {
     const second = await boot(r);
     expect(second.rootToken).not.toBe("garbage-token-that-is-not-valid-0123456789");
     expect((await call(second.url, second.rootToken, "tree.list", {})).status).toBe(200);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(fileMode(path)).toBe(0o600);
     expect(readdirSync(r.config.stateDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
   });
 
@@ -491,7 +498,7 @@ describe("起動の安全", () => {
     await first.daemon.stop();
     cleanups.length = 0;
     const root = join(r.config.stateDir, "children.noindex");
-    expect(lstatSync(root).mode & 0o777).toBe(0o700);
+    expect(fileMode(root)).toBe(0o700);
     mkdirSync(join(root, "0".repeat(32)), { mode: 0o700 });
     await boot(r);
     expect(existsSync(join(root, "0".repeat(32)))).toBe(false);
@@ -1495,7 +1502,7 @@ describe("createDaemon（daemon の身元確認）", () => {
     if (!made.ok) throw new Error(made.error.code);
     const run = await made.value.start();
     const text = readFileSync(run.identityPath, "utf8");
-    expect(statSync(run.identityPath).mode & 0o777).toBe(0o600);
+    expect(fileMode(run.identityPath)).toBe(0o600);
     const id = parseIdentityFile(text);
     expect(id).toBeDefined();
     const res = await identityOf(run.url, NONCE);
@@ -2011,12 +2018,12 @@ describe("Desktop の子（childRuntime: desktop・仮置き）", () => {
     expect(r.launcher.sessions).toHaveLength(0); // SDK では起動しない
     const b = await bindByInstruction(d, nodeId);
     // spawn のときに、daemon が引き出し（0700）と node（0600）を作っている
-    expect(lstatSync(b.drawer).mode & 0o777).toBe(0o700);
+    expect(fileMode(b.drawer)).toBe(0o700);
     expect(readFileSync(join(b.drawer, "node"), "utf8").trim()).toBe(nodeId);
-    expect(lstatSync(join(b.drawer, "node")).mode & 0o777).toBe(0o600);
+    expect(fileMode(join(b.drawer, "node"))).toBe(0o600);
     for (const c of [b.bindLine, b.reportLine]) expect(c).not.toContain(b.code);
     expect(existsSync(join(b.drawer, "code"))).toBe(false);
-    expect(lstatSync(join(b.drawer, "token")).mode & 0o777).toBe(0o600);
+    expect(fileMode(join(b.drawer, "token"))).toBe(0o600);
     const token = readFileSync(join(b.drawer, "token"), "utf8").trim();
     const reported = await b.report("進んだ\n");
     expect(JSON.parse(reported.stdout).ok, reported.stdout + reported.stderr).toBe(true);
@@ -2064,7 +2071,7 @@ describe("Desktop の子（childRuntime: desktop・仮置き）", () => {
     const d = await boot(r);
     const nodeId = await spawnDesktop(d);
     const b = await bindByInstruction(d, nodeId);
-    expect(lstatSync(join(b.drawer, "hook-token")).mode & 0o777).toBe(0o600);
+    expect(fileMode(join(b.drawer, "hook-token"))).toBe(0o600);
     const hookLine = b.bindLine.replace(" child bind ", " child hook ");
     const read = (file: string, cwd = b.worktree) =>
       runHook(hookLine, {

@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createCredentialStore } from "../../src/api/credentials.js";
 import { loadOrCreateHumanToken } from "../../src/api/human-token.js";
 import { FileTokenRepository, MemoryTokenRepository } from "../../src/api/token-repository.js";
+import { CHMOD_LOOSENS, fileMode } from "../file-mode.js";
 import { CAN_SYMLINK } from "../symlink-support.js";
 
 const dirs: string[] = [];
@@ -33,7 +34,7 @@ const rec = (nodeId: string, role: "integrator" | "child" = "child") => ({
   nodeId,
   issuedAt: "2026-10-20T00:00:00.000Z",
 });
-const mode = (p: string) => statSync(p).mode & 0o777;
+const mode = (p: string) => fileMode(p);
 
 describe("FileTokenRepository（ハッシュ・ロール・nodeId・発行日時だけを 0600 のファイルに保存）", () => {
   it("保存したものを、開き直しても読める。ファイルは 0600、ディレクトリは 0700", () => {
@@ -73,28 +74,31 @@ describe("FileTokenRepository（ハッシュ・ロール・nodeId・発行日時
     expect(readdirSync(dir)).toEqual(["tokens.json"]);
   });
 
-  it("グループ・他者が読める権限、壊れた JSON、不正な形のファイルは、黙って捨てずに失敗する（フェイルクローズ）", () => {
-    const dir = tmp();
-    const path = join(dir, "tokens.json");
-    new FileTokenRepository(path).put(rec("a"));
-    chmodSync(path, 0o644);
-    expect(() => new FileTokenRepository(path).load()).toThrow(/権限/);
-    chmodSync(path, 0o600);
-    writeFileSync(path, "{not json", { mode: 0o600 });
-    expect(() => new FileTokenRepository(path).load()).toThrow();
-    for (const bad of [
-      { version: 3, tokens: [] },
-      { version: 1, tokens: [{ ...rec("a"), role: "human" }] },
-      { version: 1, tokens: [{ ...rec("a"), tokenHash: "xyz" }] },
-      { version: 1, tokens: [{ ...rec("a"), nodeId: "../x" }] },
-      { version: 1, tokens: [{ ...rec("a"), issuedAt: "yesterday" }] },
-      { version: 1, tokens: "x" },
-      [],
-    ]) {
-      writeFileSync(path, JSON.stringify(bad), { mode: 0o600 });
-      expect(() => new FileTokenRepository(path).load(), JSON.stringify(bad)).toThrow();
-    }
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "グループ・他者が読める権限、壊れた JSON、不正な形のファイルは、黙って捨てずに失敗する（フェイルクローズ）",
+    () => {
+      const dir = tmp();
+      const path = join(dir, "tokens.json");
+      new FileTokenRepository(path).put(rec("a"));
+      chmodSync(path, 0o644);
+      expect(() => new FileTokenRepository(path).load()).toThrow(/権限/);
+      chmodSync(path, 0o600);
+      writeFileSync(path, "{not json", { mode: 0o600 });
+      expect(() => new FileTokenRepository(path).load()).toThrow();
+      for (const bad of [
+        { version: 3, tokens: [] },
+        { version: 1, tokens: [{ ...rec("a"), role: "human" }] },
+        { version: 1, tokens: [{ ...rec("a"), tokenHash: "xyz" }] },
+        { version: 1, tokens: [{ ...rec("a"), nodeId: "../x" }] },
+        { version: 1, tokens: [{ ...rec("a"), issuedAt: "yesterday" }] },
+        { version: 1, tokens: "x" },
+        [],
+      ]) {
+        writeFileSync(path, JSON.stringify(bad), { mode: 0o600 });
+        expect(() => new FileTokenRepository(path).load(), JSON.stringify(bad)).toThrow();
+      }
+    },
+  );
 
   it("ファイルに、トークンそのものは含まれない", () => {
     const path = join(tmp(), "tokens.json");
@@ -109,18 +113,23 @@ describe("FileTokenRepository（ハッシュ・ロール・nodeId・発行日時
 });
 
 describe("保存先の安全性（ディレクトリ・ファイルの検査）", () => {
-  it("保存先のディレクトリが、グループ・他者から書き込めるなら失敗する（読み込みも書き込みも）", () => {
-    const dir = tmp();
-    const sub = join(dir, "open");
-    mkdirSync(sub, { mode: 0o700 });
-    chmodSync(sub, 0o775);
-    expect(() => new FileTokenRepository(join(sub, "tokens.json")).load()).toThrow(/ディレクトリ/);
-    expect(() => new FileTokenRepository(join(sub, "tokens.json")).put(rec("a"))).toThrow(
-      /ディレクトリ/,
-    );
-    chmodSync(sub, 0o755); // 読めるだけなら許す
-    expect(() => new FileTokenRepository(join(sub, "tokens.json")).load()).not.toThrow();
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "保存先のディレクトリが、グループ・他者から書き込めるなら失敗する（読み込みも書き込みも）",
+    () => {
+      const dir = tmp();
+      const sub = join(dir, "open");
+      mkdirSync(sub, { mode: 0o700 });
+      chmodSync(sub, 0o775);
+      expect(() => new FileTokenRepository(join(sub, "tokens.json")).load()).toThrow(
+        /ディレクトリ/,
+      );
+      expect(() => new FileTokenRepository(join(sub, "tokens.json")).put(rec("a"))).toThrow(
+        /ディレクトリ/,
+      );
+      chmodSync(sub, 0o755); // 読めるだけなら許す
+      expect(() => new FileTokenRepository(join(sub, "tokens.json")).load()).not.toThrow();
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)("ディレクトリがシンボリックリンクなら失敗する", () => {
     const dir = tmp();
@@ -242,7 +251,7 @@ describe("loadOrCreateHumanToken（人間のトークンは 0600 のファイル
     });
   });
 
-  it("権限が緩い・短すぎる・空のファイルは失敗する（上書きしない）", () => {
+  it.skipIf(!CHMOD_LOOSENS)("権限が緩い・短すぎる・空のファイルは失敗する（上書きしない）", () => {
     const dir = tmp();
     const path = join(dir, "human-token");
     writeFileSync(path, `${"x".repeat(43)}\n`, { mode: 0o644 });
@@ -272,15 +281,18 @@ describe("loadOrCreateHumanToken（人間のトークンは 0600 のファイル
     }
   });
 
-  it("置き場所のディレクトリの権限（グループ・他者が書ける）とシンボリックリンクのファイルは失敗する", () => {
-    const dir = tmp();
-    const open = join(dir, "open");
-    mkdirSync(open, { mode: 0o700 });
-    chmodSync(open, 0o777);
-    expect(() => loadOrCreateHumanToken(join(open, "human-token"))).toThrow(/ディレクトリ/);
-    const real = join(dir, "real");
-    writeFileSync(real, `${"x".repeat(43)}\n`, { mode: 0o600 });
-    symlinkSync(real, join(dir, "link-token"));
-    expect(() => loadOrCreateHumanToken(join(dir, "link-token"))).toThrow(/通常のファイル/);
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "置き場所のディレクトリの権限（グループ・他者が書ける）とシンボリックリンクのファイルは失敗する",
+    () => {
+      const dir = tmp();
+      const open = join(dir, "open");
+      mkdirSync(open, { mode: 0o700 });
+      chmodSync(open, 0o777);
+      expect(() => loadOrCreateHumanToken(join(open, "human-token"))).toThrow(/ディレクトリ/);
+      const real = join(dir, "real");
+      writeFileSync(real, `${"x".repeat(43)}\n`, { mode: 0o600 });
+      symlinkSync(real, join(dir, "link-token"));
+      expect(() => loadOrCreateHumanToken(join(dir, "link-token"))).toThrow(/通常のファイル/);
+    },
+  );
 });

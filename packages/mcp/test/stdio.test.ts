@@ -12,6 +12,7 @@ import {
   runStdio,
   type StdioTarget,
 } from "../src/stdio.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const TOKEN = "abcdefghijklmnopqrstuvwxyz012345";
@@ -75,21 +76,24 @@ describe("touryou-mcp --stdio の接続先とトークン", () => {
     expect(resolveStdioTarget(["--port", "1"], { HOME: h }).ok).toBe(false);
   });
 
-  it("root-token の権限が 0600 でない（0640・0644・0700）・リンク・ない、なら失敗（トークンの値は原因に出さない）", () => {
-    for (const mode of [0o640, 0o644, 0o700]) {
-      const x = home({ tokenMode: mode });
-      const r = resolveStdioTarget([], { HOME: x.h });
-      expect(r.ok, mode.toString(8)).toBe(false);
-      expect(JSON.stringify(r)).not.toContain(TOKEN);
-    }
-    const link = home({ token: null });
-    writeFileSync(join(link.h, "real"), TOKEN, { mode: 0o600 });
-    symlinkSync(join(link.h, "real"), join(link.state, "root-token"));
-    expect(resolveStdioTarget([], { HOME: link.h }).ok).toBe(false);
-    const none = home({ token: null });
-    const r3 = resolveStdioTarget([], { HOME: none.h });
-    expect(r3.ok === false && r3.error.code).toBe("unauthenticated");
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "root-token の権限が 0600 でない（0640・0644・0700）・リンク・ない、なら失敗（トークンの値は原因に出さない）",
+    () => {
+      for (const mode of [0o640, 0o644, 0o700]) {
+        const x = home({ tokenMode: mode });
+        const r = resolveStdioTarget([], { HOME: x.h });
+        expect(r.ok, mode.toString(8)).toBe(false);
+        expect(JSON.stringify(r)).not.toContain(TOKEN);
+      }
+      const link = home({ token: null });
+      writeFileSync(join(link.h, "real"), TOKEN, { mode: 0o600 });
+      symlinkSync(join(link.h, "real"), join(link.state, "root-token"));
+      expect(resolveStdioTarget([], { HOME: link.h }).ok).toBe(false);
+      const none = home({ token: null });
+      const r3 = resolveStdioTarget([], { HOME: none.h });
+      expect(r3.ok === false && r3.error.code).toBe("unauthenticated");
+    },
+  );
 
   it("トークンの形（16〜512 文字・使える文字）を確かめる", () => {
     expect(resolveStdioTarget([], { HOME: home({ token: "short" }).h }).ok).toBe(false);
@@ -98,22 +102,27 @@ describe("touryou-mcp --stdio の接続先とトークン", () => {
     );
   });
 
-  it("置き場（.touryou・state）の権限: 0700・0755 は可、0775・0777・0770・0722 は不可", () => {
-    for (const [mode, good] of [
-      [0o700, true],
-      [0o755, true],
-      [0o775, false],
-      [0o777, false],
-      [0o770, false],
-      [0o722, false],
-    ] as const) {
-      for (const which of ["touryou", "state"] as const) {
-        const x = home();
-        chmodSync(x[which], mode);
-        expect(resolveStdioTarget([], { HOME: x.h }).ok, `${which} ${mode.toString(8)}`).toBe(good);
+  it.skipIf(!CHMOD_LOOSENS)(
+    "置き場（.touryou・state）の権限: 0700・0755 は可、0775・0777・0770・0722 は不可",
+    () => {
+      for (const [mode, good] of [
+        [0o700, true],
+        [0o755, true],
+        [0o775, false],
+        [0o777, false],
+        [0o770, false],
+        [0o722, false],
+      ] as const) {
+        for (const which of ["touryou", "state"] as const) {
+          const x = home();
+          chmodSync(x[which], mode);
+          expect(resolveStdioTarget([], { HOME: x.h }).ok, `${which} ${mode.toString(8)}`).toBe(
+            good,
+          );
+        }
       }
-    }
-  });
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)("置き場がリンクなら失敗する", () => {
     const { h } = home();
@@ -124,7 +133,7 @@ describe("touryou-mcp --stdio の接続先とトークン", () => {
     expect(resolveStdioTarget([], { HOME: h }).ok).toBe(false);
   });
 
-  it("設定ファイル・port がリンク・他の人が書ける、なら読まない", () => {
+  it.skipIf(!CHMOD_LOOSENS)("設定ファイル・port がリンク・他の人が書ける、なら読まない", () => {
     const a = home();
     chmodSync(join(a.touryou, "config.json"), 0o666);
     expect(resolveStdioTarget([], { HOME: a.h }).ok).toBe(false);

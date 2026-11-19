@@ -26,6 +26,7 @@ import {
   safeCause as safeCauseOf,
   tmutilFailureKind,
 } from "../src/children-dir.js";
+import { CHMOD_LOOSENS, fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const made: string[] = [];
@@ -39,7 +40,7 @@ afterEach(() => {
   for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 const noExclude = async () => undefined;
-const mode = (p: string) => lstatSync(p).mode & 0o777;
+const mode = (p: string) => fileMode(p);
 
 describe("子の引き出しの置き場", () => {
   it("置き場（0700）と鍵のファイル（0600）を作る。鍵は推測できない形で、再起動しても同じ", () => {
@@ -56,7 +57,7 @@ describe("子の引き出しの置き場", () => {
     expect(prepareChildrenDirs(state(), { exclude: noExclude }).keyOf("node-a")).not.toBe(k);
   });
 
-  it("すでにある置き場が 0700 でない・リンクなら、直さずに失敗する", () => {
+  it.skipIf(!CHMOD_LOOSENS)("すでにある置き場が 0700 でない・リンクなら、直さずに失敗する", () => {
     const s = state();
     mkdirSync(join(s, CHILDREN_DIR), { mode: 0o755 });
     chmodSync(join(s, CHILDREN_DIR), 0o755);
@@ -68,7 +69,7 @@ describe("子の引き出しの置き場", () => {
     expect(() => prepareChildrenDirs(s2, { exclude: noExclude })).toThrow("実のディレクトリでない");
   });
 
-  it("鍵のファイルが緩い権限・リンク・壊れた中身なら、失敗する", () => {
+  it.skipIf(!CHMOD_LOOSENS)("鍵のファイルが緩い権限・リンク・壊れた中身なら、失敗する", () => {
     const s = state();
     writeFileSync(join(s, CHILDREN_KEY_FILE), `${"a".repeat(64)}\n`, { mode: 0o644 });
     chmodSync(join(s, CHILDREN_KEY_FILE), 0o644);
@@ -82,17 +83,20 @@ describe("子の引き出しの置き場", () => {
     expect(() => prepareChildrenDirs(s3, { exclude: noExclude })).toThrow("壊れて");
   });
 
-  it("子の引き出しを 0700 で作る。すでにある引き出しがリンクなら失敗する", () => {
-    const s = state();
-    const d = prepareChildrenDirs(s, { exclude: noExclude });
-    const dir = d.create("node-a");
-    expect(dir).toBe(join(s, CHILDREN_DIR, d.keyOf("node-a")));
-    expect(mode(dir)).toBe(0o700);
-    expect(d.create("node-a")).toBe(dir); // 2 回目は確かめるだけ
-    const target = state();
-    symlinkSync(target, join(d.root, d.keyOf("node-b")));
-    expect(() => d.create("node-b")).toThrow("実のディレクトリでない");
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "子の引き出しを 0700 で作る。すでにある引き出しがリンクなら失敗する",
+    () => {
+      const s = state();
+      const d = prepareChildrenDirs(s, { exclude: noExclude });
+      const dir = d.create("node-a");
+      expect(dir).toBe(join(s, CHILDREN_DIR, d.keyOf("node-a")));
+      expect(mode(dir)).toBe(0o700);
+      expect(d.create("node-a")).toBe(dir); // 2 回目は確かめるだけ
+      const target = state();
+      symlinkSync(target, join(d.root, d.keyOf("node-b")));
+      expect(() => d.create("node-b")).toThrow("実のディレクトリでない");
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)(
     "消すときはリンクをたどらない（引き出しがリンクならリンクだけ、中のリンクの先も消さない）",
@@ -229,21 +233,24 @@ describe("引き出しの中身と、状態の移り変わり", () => {
     expect(d.pathOf("a")).toBe(dir);
   });
 
-  it("removeFiles は指定の名前とその一時ファイルだけを消す（引き出しと node は残す。リンクはリンクだけ）", () => {
-    const s = state();
-    prepareChildrenDirs(s, { exclude: noExclude });
-    const d = prepareChildrenDirs(s, { exclude: noExclude });
-    const dir = d.create("a");
-    d.writeFile("a", "node", "a");
-    const outside = state();
-    writeFileSync(join(outside, "keep"), "x");
-    for (const f of ["token", "url", "token.tmp-1234"]) writeFileSync(join(dir, f), "x");
-    symlinkSync(join(outside, "keep"), join(dir, "code"));
-    d.removeFiles("a", ["token", "url", "code"]);
-    expect(readdirSync(dir)).toEqual(["node"]);
-    expect(existsSync(join(outside, "keep"))).toBe(true);
-    d.removeFiles("zz", ["token"]); // 引き出しがなければ何もしない
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "removeFiles は指定の名前とその一時ファイルだけを消す（引き出しと node は残す。リンクはリンクだけ）",
+    () => {
+      const s = state();
+      prepareChildrenDirs(s, { exclude: noExclude });
+      const d = prepareChildrenDirs(s, { exclude: noExclude });
+      const dir = d.create("a");
+      d.writeFile("a", "node", "a");
+      const outside = state();
+      writeFileSync(join(outside, "keep"), "x");
+      for (const f of ["token", "url", "token.tmp-1234"]) writeFileSync(join(dir, f), "x");
+      symlinkSync(join(outside, "keep"), join(dir, "code"));
+      d.removeFiles("a", ["token", "url", "code"]);
+      expect(readdirSync(dir)).toEqual(["node"]);
+      expect(existsSync(join(outside, "keep"))).toBe(true);
+      d.removeFiles("zz", ["token"]); // 引き出しがなければ何もしない
+    },
+  );
 
   it("drawerActionFor の表: spawn で作る（起動時に初めて見るノードは作らない。stopped なら中を消す）、stopped で中を消す、verified・reclaimable・archived で消す、done は何もしない", () => {
     expect(drawerActionFor(undefined, "pending", false)).toBe("create");

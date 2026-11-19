@@ -19,6 +19,7 @@ import {
   removeBindCodeFile,
   writeBindCodeFile,
 } from "../src/bind-code-file.js";
+import { fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 /** 追加の作業ツリーの形（`.git` はファイルで、`gitdir:` が共通の git の worktrees/<名前> を指す）を作る。 */
@@ -37,7 +38,7 @@ describe("紐付けのコードのファイル（daemon）", () => {
     const t = tree();
     const path = writeBindCodeFile(t.wt, "ABC");
     expect(path).toBe(join(t.gitDir, BIND_CODE_FILE));
-    expect(lstatSync(path).mode & 0o777).toBe(0o600);
+    expect(fileMode(path)).toBe(0o600);
     expect(readFileSync(path, "utf8")).toBe("ABC\n");
     // 書き直し（一時ファイルから名前を替える。一時ファイルは残らない）
     writeBindCodeFile(t.wt, "DEF");

@@ -17,6 +17,7 @@ import {
   readIdentityFileSecure,
 } from "../src/identity.js";
 import { createRelay } from "../src/relay.js";
+import { CHMOD_LOOSENS } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const DAEMON_ID = "00112233445566778899aabbccddeeff";
@@ -573,9 +574,12 @@ describe("readIdentityFileSecure（O_NOFOLLOW・fstat。daemon の assertSecureF
     expect(readIdentityFileSecure(write("ok", 0o600))).toBe(fileText());
   });
 
-  it.each([0o644, 0o640, 0o604, 0o660, 0o666, 0o755])("権限が緩い（%o）と拒否する", (mode) => {
-    expect(() => readIdentityFileSecure(write("loose", mode))).toThrow();
-  });
+  it.skipIf(!CHMOD_LOOSENS).each([0o644, 0o640, 0o604, 0o660, 0o666, 0o755])(
+    "権限が緩い（%o）と拒否する",
+    (mode) => {
+      expect(() => readIdentityFileSecure(write("loose", mode))).toThrow();
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)("symlink は辿らない（リンク先が正しいファイルでも拒否）", () => {
     const real = write("real", 0o600);
@@ -584,7 +588,8 @@ describe("readIdentityFileSecure（O_NOFOLLOW・fstat。daemon の assertSecureF
     expect(() => readIdentityFileSecure(link)).toThrow();
   });
 
-  it("FIFO は、ブロックせずに拒否する", () => {
+  // Windows には FIFO（mkfifo）がない
+  it.skipIf(process.platform === "win32")("FIFO は、ブロックせずに拒否する", () => {
     const p = join(setup(), "fifo");
     execFileSync("mkfifo", [p]);
     chmodSync(p, 0o600);
@@ -606,17 +611,20 @@ describe("readIdentityFileSecure（O_NOFOLLOW・fstat。daemon の assertSecureF
     expect(readIdentityFileSecure(p, { getuid: () => process.getuid?.() })).toBe(fileText());
   });
 
-  it("verifier の既定の読み出しは、これを使う（緩い権限のファイルは、身元の失敗）", async () => {
-    const v = createIdentityVerifier({
-      daemonUrl: URL1,
-      identityPath: write("loose2", 0o644),
-      fetch: (async () => {
-        throw new Error("呼ばれない");
-      }) as unknown as typeof fetch,
-    });
-    const res = await v.verify();
-    expect(!res.ok && res.failure.code).toBe("daemon_identity_failed");
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "verifier の既定の読み出しは、これを使う（緩い権限のファイルは、身元の失敗）",
+    async () => {
+      const v = createIdentityVerifier({
+        daemonUrl: URL1,
+        identityPath: write("loose2", 0o644),
+        fetch: (async () => {
+          throw new Error("呼ばれない");
+        }) as unknown as typeof fetch,
+      });
+      const res = await v.verify();
+      expect(!res.ok && res.failure.code).toBe("daemon_identity_failed");
+    },
+  );
 });
 
 describe("relay と再起動の待ち（本物の検証器）", () => {

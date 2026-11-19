@@ -12,6 +12,7 @@ import {
   removeIdentityFile,
   writeIdentityFile,
 } from "../../src/api/identity.js";
+import { fileMode } from "../file-mode.js";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -96,7 +97,7 @@ describe("身元のファイル", () => {
     const path = join(tmp(), IDENTITY_FILE);
     const id = createIdentity();
     writeIdentityFile(path, id);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(fileMode(path)).toBe(0o600);
     expect(parseIdentityFile(readFileSync(path, "utf8"))).toEqual(id);
     expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(1);
   });

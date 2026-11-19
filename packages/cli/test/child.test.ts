@@ -3,7 +3,6 @@ import {
   chmodSync,
   existsSync,
   linkSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -14,11 +13,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ROLE_OPERATIONS } from "@touryou/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { runBin } from "../src/bin.js";
 import { CHILD_FILES, REPORT_OPERATIONS, runChild } from "../src/child.js";
+import { CHMOD_LOOSENS, fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const URL = "http://127.0.0.1:7777";
@@ -104,7 +104,7 @@ const withReport = (d: string, body: string, fetch: typeof globalThis.fetch) => 
   writeFileSync(join(d, CHILD_FILES.report), body, { mode: 0o644 });
   return deps(fetch);
 };
-const mode = (p: string) => lstatSync(p).mode & 0o777;
+const mode = (p: string) => fileMode(p);
 const all = (r: { stdout: string; stderr: string }) => r.stdout + r.stderr;
 
 describe("touryou child bind", () => {
@@ -175,27 +175,30 @@ describe("touryou child bind", () => {
     expect(existsSync(join(d, CHILD_FILES.code))).toBe(false);
   });
 
-  it("引き出しが 0700 でない・リンク・相対パスなら、読まずに失敗する", async () => {
-    const fake = daemon();
-    const d = drawer();
-    writeCode(d);
-    chmodSync(d, 0o755);
-    expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
-      "dirInvalid\n",
-    );
-    expect(existsSync(join(d, CHILD_FILES.code))).toBe(true); // 引き出しを確かめる前に、code に触れない
-    const real = drawer();
-    const link = `${real}-link`;
-    symlinkSync(real, link);
-    made.push(link);
-    expect((await runChild(["bind", "--dir", link, "--url", URL], deps(fake.fetch))).stdout).toBe(
-      "dirInvalid\n",
-    );
-    expect(
-      (await runChild(["bind", "--dir", "rel/k", "--url", URL], deps(fake.fetch))).exitCode,
-    ).toBe(2);
-    expect(fake.sent).toHaveLength(0);
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "引き出しが 0700 でない・リンク・相対パスなら、読まずに失敗する",
+    async () => {
+      const fake = daemon();
+      const d = drawer();
+      writeCode(d);
+      chmodSync(d, 0o755);
+      expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
+        "dirInvalid\n",
+      );
+      expect(existsSync(join(d, CHILD_FILES.code))).toBe(true); // 引き出しを確かめる前に、code に触れない
+      const real = drawer();
+      const link = `${real}-link`;
+      symlinkSync(real, link);
+      made.push(link);
+      expect((await runChild(["bind", "--dir", link, "--url", URL], deps(fake.fetch))).stdout).toBe(
+        "dirInvalid\n",
+      );
+      expect(
+        (await runChild(["bind", "--dir", "rel/k", "--url", URL], deps(fake.fetch))).exitCode,
+      ).toBe(2);
+      expect(fake.sent).toHaveLength(0);
+    },
+  );
 
   it.skipIf(!CAN_SYMLINK)(
     "code がリンク・ハードリンク・書き込みの権限が緩い・大きすぎる・ないときは、送らない（リンクの先は消さない）",
@@ -243,16 +246,19 @@ describe("touryou child bind", () => {
     expect(fake.sent).toHaveLength(0);
   });
 
-  it("node のファイル（daemon が書く）は 0600 でなければ失敗する", async () => {
-    const d = drawer();
-    writeCode(d);
-    chmodSync(join(d, CHILD_FILES.node), 0o644);
-    const fake = daemon();
-    expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
-      "nodeInvalid\n",
-    );
-    expect(existsSync(join(d, CHILD_FILES.code))).toBe(true); // node を先に確かめるので、code に触れない
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "node のファイル（daemon が書く）は 0600 でなければ失敗する",
+    async () => {
+      const d = drawer();
+      writeCode(d);
+      chmodSync(join(d, CHILD_FILES.node), 0o644);
+      const fake = daemon();
+      expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
+        "nodeInvalid\n",
+      );
+      expect(existsSync(join(d, CHILD_FILES.code))).toBe(true); // node を先に確かめるので、code に触れない
+    },
+  );
 
   it("--url はループバックの窓口だけ（パス・ユーザー名・ほかのホストは拒否）", async () => {
     const d = drawer();
@@ -405,40 +411,43 @@ describe("touryou child report", () => {
     expect(all(r)).not.toContain(TOKEN);
   });
 
-  it("token・url のファイルは 0600 でなければ・リンクなら失敗する（送らない）", async () => {
-    const fake = daemon();
-    const d = bound();
-    chmodSync(join(d, CHILD_FILES.token), 0o644);
-    expect(
-      (
-        await runChild(
-          ["report", "--dir", d, "--url", URL, "progress"],
-          withReport(d, "x", fake.fetch),
-        )
-      ).stdout,
-    ).toBe("tokenInvalid\n");
-    const e = bound();
-    rmSync(join(e, CHILD_FILES.url));
-    symlinkSync(join(d, CHILD_FILES.url), join(e, CHILD_FILES.url));
-    expect(
-      (
-        await runChild(
-          ["report", "--dir", e, "--url", URL, "progress"],
-          withReport(e, "x", fake.fetch),
-        )
-      ).stdout,
-    ).toBe("urlInvalid\n");
-    const f = drawer();
-    expect(
-      (
-        await runChild(
-          ["report", "--dir", f, "--url", URL, "progress"],
-          withReport(f, "x", fake.fetch),
-        )
-      ).stdout,
-    ).toBe("urlMissing\n");
-    expect(fake.sent).toHaveLength(0);
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "token・url のファイルは 0600 でなければ・リンクなら失敗する（送らない）",
+    async () => {
+      const fake = daemon();
+      const d = bound();
+      chmodSync(join(d, CHILD_FILES.token), 0o644);
+      expect(
+        (
+          await runChild(
+            ["report", "--dir", d, "--url", URL, "progress"],
+            withReport(d, "x", fake.fetch),
+          )
+        ).stdout,
+      ).toBe("tokenInvalid\n");
+      const e = bound();
+      rmSync(join(e, CHILD_FILES.url));
+      symlinkSync(join(d, CHILD_FILES.url), join(e, CHILD_FILES.url));
+      expect(
+        (
+          await runChild(
+            ["report", "--dir", e, "--url", URL, "progress"],
+            withReport(e, "x", fake.fetch),
+          )
+        ).stdout,
+      ).toBe("urlInvalid\n");
+      const f = drawer();
+      expect(
+        (
+          await runChild(
+            ["report", "--dir", f, "--url", URL, "progress"],
+            withReport(f, "x", fake.fetch),
+          )
+        ).stdout,
+      ).toBe("urlMissing\n");
+      expect(fake.sent).toHaveLength(0);
+    },
+  );
 
   it("runBin: touryou child は、人間のトークン・環境変数なしで動く", async () => {
     const d = drawer();
@@ -499,16 +508,19 @@ describe("touryou child の失敗の扱い", () => {
     expect(fake.sent).toHaveLength(0);
   });
 
-  it("node を確かめてから code を読む（node が不正なら code に触れない）", async () => {
-    const d = drawer();
-    writeCode(d);
-    chmodSync(join(d, CHILD_FILES.node), 0o644);
-    const fake = daemon();
-    expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
-      "nodeInvalid\n",
-    );
-    expect(existsSync(join(d, CHILD_FILES.code))).toBe(true);
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "node を確かめてから code を読む（node が不正なら code に触れない）",
+    async () => {
+      const d = drawer();
+      writeCode(d);
+      chmodSync(join(d, CHILD_FILES.node), 0o644);
+      const fake = daemon();
+      expect((await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch))).stdout).toBe(
+        "nodeInvalid\n",
+      );
+      expect(existsSync(join(d, CHILD_FILES.code))).toBe(true);
+    },
+  );
 
   it("先に url、そのあと token を置く。token を置けなければ url も消す", async () => {
     const d = drawer();

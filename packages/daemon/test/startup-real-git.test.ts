@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Daemon } from "../src/compose.js";
 import { loadWorktreePorts } from "../src/loaders.js";
 import { main } from "../src/main.js";
+import { fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const running: Daemon[] = [];
@@ -113,7 +114,7 @@ describe("起動を、実物の git の口（loadWorktreePorts）を通して確
     const codePath = join(gitDir, "touryou-bind-code");
     const st = lstatSync(codePath);
     expect(st.isFile()).toBe(true);
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(fileMode(codePath)).toBe(0o600);
     const code = readFileSync(codePath, "utf8").trim();
     expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     // 依頼の中身: コードは入らない。作業ツリーと名前は入る

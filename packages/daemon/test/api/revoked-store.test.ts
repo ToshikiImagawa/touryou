@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCredentialStore } from "../../src/api/credentials.js";
 import { FileRevokedStore, MemoryRevokedStore } from "../../src/api/revoked-store.js";
+import { fileMode } from "../file-mode.js";
 
 const HUMAN = "h".repeat(40);
 const made: string[] = [];
@@ -26,7 +27,7 @@ describe("FileRevokedStore（失効の印の永続化）", () => {
     const now = 1000;
     const s = new FileRevokedStore(path, { nowMs: () => now });
     s.add(HASH_A, 5000);
-    expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+    expect(fileMode(path).toString(8)).toBe("600");
     // 別のインスタンス（起動し直しに相当）でも読める。
     const s2 = new FileRevokedStore(path, { nowMs: () => now });
     expect(s2.load().get(HASH_A)).toBe(5000);

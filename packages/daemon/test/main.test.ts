@@ -15,6 +15,7 @@ import { failure, ok } from "@touryou/core";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Daemon, WorktreePorts } from "../src/compose.js";
 import { type MainDeps, main } from "../src/main.js";
+import { CHMOD_LOOSENS, fileMode } from "./file-mode.js";
 import { CAN_SYMLINK } from "./symlink-support.js";
 
 const running: Daemon[] = [];
@@ -148,7 +149,7 @@ describe("窓口のポートの決め方（port-file.ts）", () => {
     const first = portOf(s.out);
     const file = join(s.config.stateDir, "port");
     expect(readFileSync(file, "utf8").trim()).toBe(String(first));
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(fileMode(file)).toBe(0o600);
     await stopAll();
     expect((await start(s)).exitCode).toBe(0);
     expect(portOf(s.out)).toBe(first);
@@ -193,21 +194,24 @@ describe("窓口のポートの決め方（port-file.ts）", () => {
     }
   });
 
-  it("保存したポートのファイルが壊れている・権限が緩いなら、起動しない（新しいポートにしない）", async () => {
-    const s = setup();
-    expect((await start(s)).exitCode).toBe(0);
-    await stopAll();
-    const file = join(s.config.stateDir, "port");
-    writeFileSync(file, "abc\n", { mode: 0o600 });
-    expect((await start(s)).exitCode).toBe(1);
-    expect(s.err.join("")).toContain("portFileInvalid");
-    expect(s.err.join("")).toContain("1〜65535 の整数でない");
-    expect(s.err.join("")).toContain("0600");
-    writeFileSync(file, "40000\n");
-    chmodSync(file, 0o644);
-    expect((await start(s)).exitCode).toBe(1);
-    expect(s.err.join("")).toContain("権限が緩い");
-  });
+  it.skipIf(!CHMOD_LOOSENS)(
+    "保存したポートのファイルが壊れている・権限が緩いなら、起動しない（新しいポートにしない）",
+    async () => {
+      const s = setup();
+      expect((await start(s)).exitCode).toBe(0);
+      await stopAll();
+      const file = join(s.config.stateDir, "port");
+      writeFileSync(file, "abc\n", { mode: 0o600 });
+      expect((await start(s)).exitCode).toBe(1);
+      expect(s.err.join("")).toContain("portFileInvalid");
+      expect(s.err.join("")).toContain("1〜65535 の整数でない");
+      expect(s.err.join("")).toContain("0600");
+      writeFileSync(file, "40000\n");
+      chmodSync(file, 0o644);
+      expect((await start(s)).exitCode).toBe(1);
+      expect(s.err.join("")).toContain("権限が緩い");
+    },
+  );
 
   it("--port の誤り（0・範囲外・数字でない・重複・値なし）は、終了コード 2", async () => {
     const s = setup();
