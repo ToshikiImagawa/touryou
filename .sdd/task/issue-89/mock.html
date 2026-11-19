@@ -323,6 +323,13 @@ footer{margin-top:32px;font-size:12px;color:var(--ink-2)}
   .now .count{font-size:48px}
   .now h2{font-size:19px}
   .top .tools{margin-left:0}
+  /* 小さいボタンも、指で押せる高さ（44px 以上）にする */
+  button.sm,button.copy,button.gear{min-height:44px}
+  /* 44px のボタンの下端が、図の上の空き（48px）に収まるよう、上の位置を 4px にする */
+  .zoom{top:4px}
+  .zoom button{min-width:44px;min-height:44px}
+  /* 設定の窓の切り替えのボタンは、幅も 44px 以上にする */
+  .seg button{min-width:44px}
 }
 </style>
 </head>

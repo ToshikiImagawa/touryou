@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,7 @@ import {
   UI_JS,
   UI_TEXT_JSON,
 } from "../../src/api/ui-assets.js";
+import { UI_GRAPH_JS } from "../../src/api/ui-graph-js.js";
 import { EXTERNAL_CHECK_SUMMARY, externalCheckSummaries } from "../../src/external-check.js";
 
 /** 埋め込んだ文字の表の行（#140）。JSON のオブジェクトの値だけの行（行の終わりまで形を決める）。走査から除くのは、この行だけ。 */
@@ -1352,11 +1354,16 @@ describe("画面の使い勝手（#13）", () => {
 
   it("(#89) 動きは CSS の keyframes とクラスだけ。prefers-reduced-motion と「動きを止める」で止まる", () => {
     expect(UI_CSS).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\{\*,\*::before\{animation:none!important;transition:none!important\}\}/,
+      /@media \(prefers-reduced-motion: reduce\)\{\*,\*::before\{animation:none!important;transition:none!important\}/,
     );
     expect(UI_CSS).toContain(
       ".still *,.still *::before{animation:none!important;transition:none!important}",
     );
+    // 図の上を動く玉は、動きを減らす設定と「動きを止める」のとき隠す（線と箱は残る）
+    expect(UI_CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\{[^@]*\.pip\{display:none\}\}/,
+    );
+    expect(UI_CSS).toContain(".still .pip{display:none}");
     expect(UI_JS).toContain("root.classList.toggle('still', x.still)"); // 設定の窓の「動きを止める」（#139）
     expect(UI_JS).not.toMatch(/\.animate\(|requestAnimationFrame/);
   });
@@ -1446,5 +1453,139 @@ describe("カードの状態の札（図の箱と同じ言葉）", () => {
     };
     expect(pick("STATUS_TEXT")).toEqual(STATUS_TEXT);
     expect(pick("RUN_TEXT")).toEqual(RUN_TEXT);
+  });
+});
+
+describe("状態変化の読み上げ・スマホの幅（UI レビューの対応）", () => {
+  const fnOf = (name: string): string => {
+    const i = UI_JS.indexOf(`  function ${name}(`);
+    expect(i, name).toBeGreaterThan(-1);
+    return UI_JS.slice(i, UI_JS.indexOf("\n  }\n", i) + 5);
+  };
+
+  it("図の箱は role=button で、Tab で移れる（束 graph.js の中）", () => {
+    expect(UI_GRAPH_JS).toMatch(/\.role="button"/);
+    expect(UI_GRAPH_JS).toMatch(/\.tabIndex=0/);
+  });
+
+  it("読み上げは live.wait・live.fail・live.lost の 3 つだけ（ほかに、写すボタンの結果だけ）。最初の描画では読まない", () => {
+    for (const key of ["live.wait", "live.fail", "live.lost"]) {
+      expect(UI_JS, key).toContain(`t('${key}'`);
+    }
+    const keys = [...UI_JS.matchAll(/said\.push\(t\('([^']+)'/g)].map((m) => m[1]);
+    expect(keys).toEqual(["live.wait", "live.fail"]);
+  });
+
+  it("render の読み上げ: 最初の描画では読まず、増えたときだけ読み、同じなら読まない。rejectToken のあとは最初に戻る", () => {
+    const announced: string[] = [];
+    const ctx = {
+      __announce: (m: string) => announced.push(m),
+      __cur: { wait: 0, statuses: [] as { status: string }[] },
+    };
+    const api = runInNewContext(
+      [
+        "var lastCount = -1; var lastFail = -1; var lostSaid = true; var lastView = null; var lastRaw = null;",
+        "var attachDir = ''; var titleById = null; var nextSeen = null; var cardStatus = null; var graphView = null; var seenItems = null;",
+        "var viaSession = false; var token = 't'; var etag = ''; var generation = 0; var sseUp = false; var keptList = null;",
+        "var purgeSignature = null; var pending = null; var controller = null;",
+        "var codeDrafts = new Map(); var approvalErrors = new Map();",
+        "var document = { activeElement: null, getElementById: function () { return {}; } };",
+        "function t(k) { return k; }",
+        "function announce(m) { __announce(m); }",
+        "function renderApprovals() {}",
+        // render は view の一部だけを v に写すので、試験の値は ctx.__cur から読む
+        "function renderTodo() { lastCount = __cur.wait; }",
+        "function statusesOf() { return __cur.statuses; }",
+        "function renderCards() {}",
+        "function renderList() { return 0; }",
+        "function renderGraph() {}",
+        "function renderPurge() {}",
+        "function showAuth() {}",
+        "function showConnected() {}",
+        "function setStatus() {}",
+        "function dropGraph() {}",
+        fnOf("render"),
+        fnOf("rejectToken"),
+        "({ render: render, rejectToken: rejectToken })",
+      ].join("\n"),
+      ctx,
+    ) as { render(view: unknown): void; rejectToken(m: string): void };
+    const view = (wait: number, fail: number) => {
+      ctx.__cur = { wait, statuses: Array.from({ length: fail }, () => ({ status: "fail" })) };
+      return {
+        nodes: [],
+        inbox: [],
+        decisions: [],
+        extensions: [],
+        flows: [],
+        confirmations: [],
+        truncated: [],
+        lastSeq: 1,
+      };
+    };
+    api.render(view(3, 1));
+    expect(announced).toEqual([]); // 前が -1（最初の描画）
+    api.render(view(5, 2));
+    expect(announced).toEqual(["live.wait。live.fail"]); // 増えた
+    api.render(view(5, 2));
+    expect(announced).toHaveLength(1); // 同じ
+    api.rejectToken("x");
+    api.render(view(9, 4));
+    expect(announced).toHaveLength(1); // rejectToken のあとは、最初の描画に戻る
+  });
+
+  it("接続が切れた読み上げは、取得に成功したあと（304 の変わりなしも）に、2 回目も読み上げる", () => {
+    const announced: string[] = [];
+    let next = 0;
+    const responses = [
+      { status: 503, ok: false },
+      { status: 503, ok: false }, // 続けて失敗しても、読み上げは 1 回だけ
+      { status: 304, ok: false }, // 変わりなしでも、取得に成功したので、戻す
+      { status: 503, ok: false }, // 2 回目の切れ
+      { status: 200, ok: true }, // 描けるほどの成功でも、戻す
+      { status: 503, ok: false }, // 3 回目の切れ
+    ];
+    const ctx = {
+      __announce: (m: string) => announced.push(m),
+      __fetch: () =>
+        Promise.resolve({
+          ...responses[next++],
+          headers: { get: () => '"e"' },
+          json: () => Promise.resolve({ ok: true, value: {} }),
+        }),
+    };
+    const api = runInNewContext(
+      [
+        "var token = 't'; var etag = ''; var lastView = { seq: 1 }; var lostSaid = false;",
+        "function t(k) { return k; }",
+        "function announce(m) { __announce(m); }",
+        "function fetch() { return __fetch(); }",
+        "function setStatus() {}",
+        "function rejectToken() {}",
+        "function render() {}",
+        "function unreachableText() { return 'u'; }",
+        "function fetchFailureText(s) { return 'f' + s; }",
+        fnOf("connectionLost"),
+        fnOf("fetchState"),
+        "({ fetchState: fetchState })",
+      ].join("\n"),
+      ctx,
+    ) as { fetchState(): Promise<void> };
+    return (async () => {
+      for (let i = 0; i < responses.length; i += 1) await api.fetchState();
+      expect(announced).toEqual(["live.lost", "live.lost", "live.lost"]);
+    })();
+  });
+
+  it("スマホの幅: 小さいボタンは 44px。図のボタンは top 4px で、下端が FIT_TOP に収まる", () => {
+    const mobile = /@media \(max-width:640px\)\{([^\n]*)\}\n?$/m.exec(UI_CSS)?.[1] ?? "";
+    expect(mobile, "スマホ幅の @media が取れない").not.toBe("");
+    expect(mobile).toContain("button.sm,button.copy,button.gear{min-height:44px}");
+    expect(mobile).toContain(".zoom button{min-width:44px;min-height:44px}");
+    const top = Number(/\.zoom\{top:(\d+)px\}/.exec(mobile)?.[1]);
+    const src = readFileSync(new URL("../../src/ui/graph-entry.ts", import.meta.url), "utf8");
+    const fitTop = Number(/const FIT_TOP = (\d+);/.exec(src)?.[1]);
+    expect(top).toBe(4);
+    expect(top + 44).toBeLessThanOrEqual(fitTop);
   });
 });
