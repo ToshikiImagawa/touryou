@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -556,6 +557,8 @@ describe("createGitPorts（実際の git で、作業ツリーの作成・事実
     it("git status が失敗したら、uncommitted・untracked は不明（workingTreeUnknown）", async () => {
       const s = setup();
       const p = await provision(s, "c1");
+      // Windows の git は .git を隠しファイルにするので、上書きで開けない（EPERM）。消してから書く
+      rmSync(join(p, ".git"));
       writeFileSync(join(p, ".git"), "gitdir: /nonexistent\n"); // 作業ツリーの .git を壊す（登録は残る）
       const loss = await s.ports.lossFor("c1");
       expect(loss?.workingTreeUnknown).toBe(true);
