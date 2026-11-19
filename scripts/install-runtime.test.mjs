@@ -25,10 +25,10 @@ import { dirname, join } from "node:path";
 import { after, test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
 import { HOOK_COMMAND_SESSION_START } from "./hook-commands.mjs";
-import { POSIX_ONLY } from "./test-platform.mjs";
+import { DIST_ONLY } from "./test-platform.mjs";
 
 /** このファイルの試験は、どれも sh・bash で配布物のシェルスクリプトを走らせる。 */
-const test = (name, fn) => nodeTest(name, { skip: POSIX_ONLY }, fn);
+const test = (name, fn) => nodeTest(name, { skip: DIST_ONLY }, fn);
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(root, "plugin", "scripts", "install-runtime.sh");
