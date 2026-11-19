@@ -14,6 +14,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import {
   type AbsPath,
+  isUnderPath,
   joinPath,
   type PathStyle,
   parsePath,
@@ -79,6 +80,21 @@ export function winAbsolute(raw: string, base: string, trusted: boolean): string
   const b = parseTrusted(base, "win");
   return b.kind === "abs" && hasWinRoot(b) ? toNative(joinPath(b, p)) : undefined;
 }
+
+/**
+ * Windows の形の実パスどうしで、`path` が `root` と同じか、その下にあるか（要素ごとに比べ、大文字小文字と正規形の違いは畳む）。
+ * どちらも、実パスにした後のパスか、daemon が決めた場所（禁じる場所・引き出し）。根が決まらなければ偽。
+ */
+export function winUnderReal(path: string, root: string): boolean {
+  const a = parseTrusted(path, "win");
+  const b = parseTrusted(root, "win");
+  if (a.kind !== "abs" || b.kind !== "abs" || !hasWinRoot(a) || !hasWinRoot(b)) return false;
+  return isUnderPath(a, b);
+}
+
+/** Windows の形の実パスどうしが、同じ場所か。 */
+export const winSameReal = (a: string, b: string): boolean =>
+  winUnderReal(a, b) && winUnderReal(b, a);
 
 /** 絶対パスを、最も深い既存の祖先の実パス＋残りにする。解決できなければ reject する。 */
 export async function resolveForWrite(
