@@ -13,14 +13,19 @@ const made: string[] = [];
 afterEach(() => {
   for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
 });
+/**
+ * 偽の読み書きは POSIX の形のパスで引く。Windows では resolve が `D:\w\a` の形にするので、ドライブと区切りをそろえて引く。
+ */
+const posixKey = (p: string): string =>
+  process.platform === "win32" ? p.replace(/^[A-Za-z]:/, "").replaceAll("\\", "/") : p;
 const hasGit = spawnSync("git", ["--version"]).error === undefined;
 
 describe("detectOpenMode", () => {
   type K = "file" | "dir" | "other" | "none" | "unknown";
   const fs = (kinds: Record<string, K>, files: Record<string, string | Error> = {}) => ({
-    kindOf: (p: string): K => kinds[p] ?? "none",
+    kindOf: (p: string): K => kinds[posixKey(p)] ?? "none",
     read: (p: string): string => {
-      const v = files[p];
+      const v = files[posixKey(p)];
       if (v === undefined) throw new Error("ENOENT");
       if (v instanceof Error) throw v;
       return v;
@@ -144,8 +149,9 @@ describe("runStdio の紐付け待ち", () => {
         streams: { stdin, stdout },
         cwd: () => "/w/a",
         marker: {
-          kindOf: (p) => (p === "/w/a/.git" || p === "/g/touryou-child" ? "file" : "none"),
-          read: (p) => (p === "/w/a/.git" ? "gitdir: /g" : "a"),
+          kindOf: (p) =>
+            posixKey(p) === "/w/a/.git" || posixKey(p) === "/g/touryou-child" ? "file" : "none",
+          read: (p) => (posixKey(p) === "/w/a/.git" ? "gitdir: /g" : "a"),
         },
         files: {
           read: (p) => {
@@ -167,9 +173,9 @@ describe("runStdio の紐付け待ち", () => {
 describe("印の探し方（submodule・CRLF・symlink の .git）", () => {
   type K = "file" | "dir" | "other" | "none" | "unknown";
   const fs = (kinds: Record<string, K>, files: Record<string, string> = {}) => ({
-    kindOf: (p: string): K => kinds[p] ?? "none",
+    kindOf: (p: string): K => kinds[posixKey(p)] ?? "none",
     read: (p: string): string => {
-      const v = files[p];
+      const v = files[posixKey(p)];
       if (v === undefined) throw new Error("ENOENT");
       return v;
     },
