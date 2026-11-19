@@ -23,13 +23,14 @@ import {
   commandWords,
   entryWords,
   evaluateScope,
+  isWinAbs,
   ownMcpToolOf,
   type PathStyle,
   type Scope,
   type ScopeViolationReason,
 } from "@touryou/core";
 import { commandEntryProblem } from "./child-permissions.js";
-import { winAbsolute } from "./path-resolve.js";
+import { winAbsolute, winSameReal, winUnderReal } from "./path-resolve.js";
 import { isReadOnlySearch } from "./read-only-search.js";
 
 /** パスの実パス化（書き込み先の判定用）。解決できなければ reject する。 */
@@ -776,6 +777,18 @@ export async function resolveScope(
   return { ...scope, writableLocations: writable, forbiddenLocations: forbidden };
 }
 
+/** `decideToolUse` の、パスの形の指定。 */
+export interface DecideOptions {
+  /** パスの形。省略すると `posix`。daemon が起動するときに 1 度だけ決めたものを渡す。 */
+  readonly style?: PathStyle;
+  /**
+   * 書き込みの道具の行き先の実パス化（`style` に合わせたもの）。省略すると `resolve`。
+   * 読み取りの道具と Bash の判定は、Windows の形にまだ対応していないので `resolve`（POSIX の実パス化）のまま使う。
+   * そのため Windows では、読み取りの道具と Bash のパスは、実パスにできず拒否になる。
+   */
+  readonly resolveWrite?: ResolvePath;
+}
+
 /**
  * `scope` は `resolveScope` で実パスにしたもの、`cwd` は実パスの作業ツリー。`toolCwd` は、道具の相対パスの基準（子が作業ツリーの
  * 配下に cd したときの、そのディレクトリ。実パス）。省略すると `cwd`。範囲の判定は、`cwd`（作業ツリー）で行う。
@@ -788,8 +801,14 @@ export async function decideToolUse(
   resolve: ResolvePath,
   protectedPaths?: ProtectedPaths,
   toolCwd: string = cwd,
+  opts: DecideOptions = {},
 ): Promise<ToolDecision> {
   if (typeof toolName !== "string") return denyUnknown("(ツール名が不正)");
+  const win = opts.style === "win";
+  const resolveWrite = opts.resolveWrite ?? resolve;
+  // 実パスどうしの比べ（Windows の形は、要素ごとに比べる。`/` だけを区切りとみなすと、禁じる場所を見落とす）
+  const underReal = (p: string, root: string): boolean =>
+    win ? winUnderReal(p, root) : under(p, root);
   // 禁じる場所（FR_014 の例外）は、読み取りの道具も含めて、ほかの判定より先に見る。
   const prot = await checkProtected(protectedPaths, toolCwd, toolName, toolInput, resolve);
   if (prot !== undefined) return prot;
@@ -802,7 +821,14 @@ export async function decideToolUse(
       return deny("invalidPath", `${toolName}（${key} がない）`);
     let target: string;
     try {
-      target = await resolve(path.startsWith("/") ? path : `${toolCwd}/${path}`);
+      // Windows の形: 子が渡したパスを検査してから、今の場所につなぐ（判定できない形は、ここで拒否する）
+      const abs = win
+        ? winAbsolute(path, toolCwd, false)
+        : path.startsWith("/")
+          ? path
+          : `${toolCwd}/${path}`;
+      if (abs === undefined) return deny("invalidPath", `${path}（判定できない形のパス）`);
+      target = await resolveWrite(abs);
     } catch {
       return deny("invalidPath", `${path}（実パスを解決できない）`);
     }
@@ -811,16 +837,20 @@ export async function decideToolUse(
     if (
       toolName === "Write" &&
       drawer !== undefined &&
-      DRAWER_WRITABLE_FILES.some((f) => fold(target) === fold(`${drawer}/${f}`))
+      DRAWER_WRITABLE_FILES.some((f) => {
+        if (!win) return fold(target) === fold(`${drawer}/${f}`);
+        const file = winAbsolute(f, drawer, true);
+        return file !== undefined && winSameReal(target, file);
+      })
     ) {
       return ALLOW;
     }
     // 見張りの設定への書き込みは、範囲の決まりによらず拒否する（書き換えて見張りを外させない）
     const deniedRoot = protectedPaths?.roots.find(
-      (r) => r.kind === "hookSettings" && under(target, r.path),
+      (r) => r.kind === "hookSettings" && underReal(target, r.path),
     );
     if (deniedRoot !== undefined) return denyProtected(deniedRoot.kind);
-    if (protectedPaths?.writeDenied?.some((w) => under(target, w)) === true) {
+    if (protectedPaths?.writeDenied?.some((w) => underReal(target, w)) === true) {
       return {
         allow: false,
         violation: { reason: "forbiddenLocation", subject: "protected:hookSettings" },
@@ -831,7 +861,7 @@ export async function decideToolUse(
     const d = evaluateScope(scope, cwd, { kind: "write", path: target });
     if (d.allowed) return ALLOW;
     // 判定は今の範囲の決まりのまま。ただし、対象が禁じる場所の中なら、件名（記録と文面）には種類だけを書く（実パスを出さない）
-    const hidden = protectedPaths?.roots.find((r) => under(target, r.path));
+    const hidden = protectedPaths?.roots.find((r) => underReal(target, r.path));
     return deny(d.reason, hidden === undefined ? d.subject : `protected:${hidden.kind}`);
   }
 
@@ -884,12 +914,15 @@ export function grantedOnlyByExtension(
   toolName: string,
   toolInput: unknown,
   cwd: string,
+  style: PathStyle = "posix",
 ): boolean {
   const key = WRITE_TOOLS[toolName];
   if (key !== undefined) {
     // 書き込み: ブリーフでは断られ、有効な範囲（承認した書き込みの場所を足したもの）では通る場所。比べられなければ偽（フェイルクローズ）
     const path = isRec(toolInput) ? toolInput[key] : undefined;
     if (typeof path !== "string") return false;
+    // Windows の形: 実パスにした後の絶対パス（`withRealWritePath` の結果）だけを比べる。実パスにできなかった入力は偽
+    if (style === "win" && !isWinAbs(path)) return false;
     return (
       !evaluateScope(brief, cwd, { kind: "write", path }).allowed &&
       evaluateScope(effective, cwd, { kind: "write", path }).allowed
@@ -922,7 +955,7 @@ export function grantedOnlyByExtension(
     granted.some(
       (w) =>
         (w.length === seg.length && w.every((x, i) => seg[i] === x)) ||
-        (plain && extendsWithSafeArgs(w, seg)),
+        (plain && extendsWithSafeArgs(w, seg, style)),
     ),
   );
 }
@@ -1041,12 +1074,19 @@ function flagAllowed(flag: string, allowed: ReadonlySet<string>): boolean {
 }
 
 /** 位置の引数 1 つが安全か。字は控えめな集まりだけ（空白・引用符・glob・`~`・展開は断る）。絶対パス・`..` も断る。 */
-function safePositional(a: string): boolean {
-  return /^[A-Za-z0-9._/:@+,%=-]+$/.test(a) && !a.startsWith("/") && !a.split("/").includes("..");
+// Windows の形では、ドライブ文字で始まるもの（`C:foo`・`C:/x`）と、`\` で分けた `..` も断る（`\` は、字の集まりに入っていない）。
+function safePositional(a: string, style: PathStyle): boolean {
+  if (!/^[A-Za-z0-9._/:@+,%=-]+$/.test(a) || a.startsWith("/")) return false;
+  if (style !== "win") return !a.split("/").includes("..");
+  return !/^[A-Za-z]:/.test(a) && !a.split(/[\\/]/).includes("..");
 }
 
 /** `entry`（承認した形）が一覧のコマンドで始まり、`seg` が entry と同じ語で始まり、そのうしろが安全な引数だけか。 */
-function extendsWithSafeArgs(entry: readonly string[], seg: readonly string[]): boolean {
+function extendsWithSafeArgs(
+  entry: readonly string[],
+  seg: readonly string[],
+  style: PathStyle,
+): boolean {
   if (seg.length <= entry.length || !entry.every((x, i) => seg[i] === x)) return false;
   const cmd = ARGS_OK_COMMANDS.find((c) => c.head.every((x, i) => entry[i] === x));
   if (cmd === undefined) return false;
@@ -1060,7 +1100,7 @@ function extendsWithSafeArgs(entry: readonly string[], seg: readonly string[]): 
       if (!flagAllowed(a, cmd.flags)) return false;
       continue;
     }
-    if (!safePositional(a)) return false;
+    if (!safePositional(a, style)) return false;
   }
   return true;
 }

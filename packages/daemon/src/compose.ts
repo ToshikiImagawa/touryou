@@ -129,7 +129,7 @@ import {
 } from "./sdk/hook-policy.js";
 import { createLsofProbe, nodeExec, type ProcessProbe } from "./sdk/lsof-probe.js";
 import { nodeTimers } from "./sdk/node-timers.js";
-import { nodeFsOps, resolveForWrite } from "./sdk/path-resolve.js";
+import { nodeFsOps, resolveForWrite, winUnderReal } from "./sdk/path-resolve.js";
 import type { PluginDirPorts } from "./sdk/plugin-dir.js";
 import { isReadOnlySearch } from "./sdk/read-only-search.js";
 import type { RuntimeAdapter, Timers } from "./sdk/runtime.js";
@@ -1469,8 +1469,9 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
   // パスの形は、起動するときに 1 度だけ決める（フックの判定は、これを引数で受け取る）
   const pathStyle: PathStyle = deps.pathStyle ?? (process.platform === "win32" ? "win" : "posix");
   const resolveHookPath = (p: string) => resolveForWrite(p, nodeFsOps, pathStyle);
-  // 判定の本体（decideToolUse・isReadOnlySearch）は、まだ POSIX の形だけを扱う。Windows の形のパスは実パスにできず、
-  // 拒否になる（判定の本体を Windows の形に対応させるまで、許可の側に倒さない）。
+  // 読み取りの道具と Bash の判定（decideToolUse の中の checkProtected・isReadOnlySearch）は、まだ POSIX の形だけを扱う。
+  // Windows の形のパスは実パスにできず、拒否になる（対応させるまで、許可の側に倒さない）。書き込みの道具の行き先だけは、
+  // decideToolUse に resolveHookPath と pathStyle を別に渡して、Windows の形で判定する。
   const resolveForDecide = (p: string) => resolveForWrite(p, nodeFsOps);
   const decideDesktopHook = async (
     nodeId: string,
@@ -1502,7 +1503,11 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
     // 作業ツリーそのもの、またはその配下（子が cd すると、Claude Code は移った先を cwd に入れる）。実パスで比べるので、
     // 作業ツリーの中のリンクで外に出たら拒否になる。大文字小文字・正規化の違いはそろえて比べる
     const folded = (x: string) => x.normalize("NFC").toLowerCase();
-    if (!(folded(here) === folded(wt) || folded(here).startsWith(`${folded(wt)}/`))) {
+    const inTree =
+      pathStyle === "win"
+        ? winUnderReal(here, wt)
+        : folded(here) === folded(wt) || folded(here).startsWith(`${folded(wt)}/`);
+    if (!inTree) {
       return {
         allow: false,
         reason:
@@ -1525,7 +1530,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
       };
     }
     const resolved = await resolveScope(scope, wt, resolveHookPath, pathStyle);
-    const homeSettings = await Promise.all(userSettingsFiles().map((f) => resolveForDecide(f)));
+    const homeSettings = await Promise.all(userSettingsFiles().map((f) => resolveHookPath(f)));
     const d = await decideToolUse(
       resolved,
       wt,
@@ -1552,6 +1557,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
         ...(config.touryouCommand === undefined ? {} : { touryouCommand: config.touryouCommand }),
       },
       here,
+      { style: pathStyle, resolveWrite: resolveHookPath },
     );
     if (d.allow) return { allow: true };
     // CLI の子と同じく、範囲違反として記録する（受信箱にも出す）
@@ -1682,6 +1688,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
         ...(config.touryouCommand === undefined ? {} : { touryouCommand: config.touryouCommand }),
       },
       here,
+      { style: pathStyle, resolveWrite: resolveHookPath },
     );
     if (d.allow) {
       // 起動のときの許可の一覧（ブリーフの範囲から作る。dontAsk）にない、承認済みの拡張でだけ通る Bash は、明示の許可を返す（#91）
@@ -1708,7 +1715,10 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
       }
       const brief = log.state().nodes.find((n) => n.id === nodeId)?.scope;
       const input = await withRealWritePath(toolName, toolInput, here, resolveHookPath, pathStyle);
-      if (brief !== undefined && grantedOnlyByExtension(brief, scope, toolName, input, wt)) {
+      if (
+        brief !== undefined &&
+        grantedOnlyByExtension(brief, scope, toolName, input, wt, pathStyle)
+      ) {
         return { allow: true, permit: "extension" };
       }
       return { allow: true };

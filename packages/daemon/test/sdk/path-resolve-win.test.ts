@@ -2,7 +2,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Scope } from "@touryou/core";
 import { describe, expect, it } from "vitest";
-import { resolveScope, withRealWritePath } from "../../src/sdk/hook-policy.js";
+import {
+  decideToolUse,
+  grantedOnlyByExtension,
+  resolveScope,
+  withRealWritePath,
+} from "../../src/sdk/hook-policy.js";
 import { type FsOps, resolveForWrite, winAbsolute } from "../../src/sdk/path-resolve.js";
 
 // Windows の形（style = win）の実パス化を、作りもののファイルシステムで確かめる（どの OS でも動く）。
@@ -184,6 +189,147 @@ describe("withRealWritePath・resolveScope（style = win）", () => {
   });
 });
 
+describe("decideToolUse の書き込みの道具（style = win）", () => {
+  const WT = "C:\\work";
+  const HOME = "C:\\Users\\me";
+  const DRAWER = "C:\\state\\children\\n1";
+  const fs = fakeFs(
+    [...DIRS, `${WT}\\.claude`, `${WT}\\.git`, `${HOME}\\.claude`, DRAWER, "C:\\state"],
+    { "C:\\work\\src\\tohome": `${HOME}\\.claude`, "C:\\work\\src\\togit": `${WT}\\.git` },
+  );
+  const resolveWrite = (p: string) => resolveForWrite(p, fs, "win");
+  // 読み取りと Bash の側は、まだ POSIX の実パス化のまま（Windows の形は実パスにできない）
+  const resolvePosix = (p: string) => resolveForWrite(p, fs);
+  const scope: Scope = {
+    writableLocations: ["C:\\work\\src"],
+    forbiddenLocations: ["C:\\work\\src\\secret"],
+    allowedCommands: ["ls"],
+  };
+  const prot = {
+    roots: [
+      { path: `${HOME}\\.claude\\settings.json`, kind: "hookSettings" as const },
+      { path: "C:\\state", kind: "stateDir" as const },
+    ],
+    allow: [],
+    writeDenied: [`${WT}\\.claude`, `${WT}\\.git`],
+    drawer: DRAWER,
+    worktree: WT,
+  };
+  const decide = (tool: string, path: string, cwd = WT) =>
+    decideToolUse(scope, WT, tool, { file_path: path }, resolvePosix, prot, cwd, {
+      style: "win",
+      resolveWrite,
+    });
+
+  it("範囲の中への書き込みは許可。相対パスは今の場所につなぐ。範囲の外・禁じる場所は拒否", async () => {
+    expect((await decide("Write", "C:\\work\\src\\a.ts")).allow).toBe(true);
+    expect((await decide("Edit", "c:/WORK/SRC/a.ts")).allow).toBe(true);
+    expect((await decide("Write", "new\\a.ts", "C:\\work\\src")).allow).toBe(true);
+    expect((await decide("Write", "C:\\work\\other\\a.ts")).allow).toBe(false);
+    expect((await decide("Write", "C:\\work\\src\\SECRET\\a.ts")).allow).toBe(false);
+    expect((await decide("Write", "C:\\outside\\a.ts")).allow).toBe(false);
+    expect((await decide("Write", "D:\\work\\src\\a.ts")).allow).toBe(false);
+  });
+  it("見張りの設定への書き込みは拒否する（大文字小文字が違っても、リンクを通っても）", async () => {
+    for (const p of [
+      `${HOME}\\.claude\\settings.json`,
+      "C:\\USERS\\ME\\.CLAUDE\\Settings.json",
+      "C:/Users/me/.claude/settings.json",
+      "C:\\work\\src\\tohome\\settings.json",
+      "C:\\work\\src\\..\\..\\Users\\me\\.claude\\settings.json",
+    ]) {
+      const d = await decide("Write", p);
+      expect(d.allow, p).toBe(false);
+      expect(JSON.stringify(d), p).toContain("hookSettings");
+    }
+  });
+  it("書き込みを禁じる場所（作業ツリーの .claude・.git）は拒否する", async () => {
+    for (const p of [
+      "C:\\work\\.claude\\settings.json",
+      "C:\\WORK\\.CLAUDE\\Settings.json",
+      ".claude\\commands\\x.md",
+      "C:\\work\\.git\\config",
+      "C:\\work\\src\\togit\\config",
+      "C:\\work\\.claude",
+    ]) {
+      const d = await decide("Edit", p);
+      expect(d.allow, p).toBe(false);
+      expect(JSON.stringify(d), p).toContain("hookSettings");
+    }
+  });
+  it("引き出しの code・report は、Write だけ許可する。ほかのファイル・ほかの道具は拒否", async () => {
+    expect((await decide("Write", `${DRAWER}\\code`)).allow).toBe(true);
+    expect((await decide("Write", "C:\\STATE\\Children\\N1\\REPORT")).allow).toBe(true);
+    expect((await decide("Write", "C:/state/children/n1/report")).allow).toBe(true);
+    expect((await decide("Edit", `${DRAWER}\\code`)).allow).toBe(false);
+    expect((await decide("Write", `${DRAWER}\\other`)).allow).toBe(false);
+    expect((await decide("Write", `${DRAWER}\\code\\x`)).allow).toBe(false);
+    expect((await decide("Write", "C:\\state\\children\\n2\\code")).allow).toBe(false);
+  });
+  it("判定できない形のパスは、invalidPath で拒否する", async () => {
+    for (const p of [
+      "C:src\\a.ts",
+      "\\work\\src\\a.ts",
+      "/work/src/a.ts",
+      "\\\\?\\C:\\work\\src\\a.ts",
+      "src\\a.ts:stream",
+      "src\\a.ts.",
+      "src\\A~1.TS",
+      "src\\NUL",
+    ]) {
+      const d = await decide("Write", p);
+      expect(d.allow, p).toBe(false);
+      expect(JSON.stringify(d), p).toContain("invalidPath");
+    }
+  });
+  it("style を渡さなければ、Windows の形の行き先は拒否のまま（許可の側に倒れない）", async () => {
+    const d = await decideToolUse(
+      scope,
+      WT,
+      "Write",
+      { file_path: "C:\\work\\src\\a.ts" },
+      resolvePosix,
+      prot,
+    );
+    expect(d.allow).toBe(false);
+  });
+});
+
+describe("grantedOnlyByExtension（style = win）", () => {
+  const brief: Scope = {
+    writableLocations: ["C:\\work\\src"],
+    forbiddenLocations: [],
+    allowedCommands: ["pnpm test"],
+  };
+  const eff: Scope = { ...brief, writableLocations: ["C:\\work\\src", "C:\\work\\docs"] };
+  it("書き込み: 実パスにした後の絶対パスだけを比べる。相対パスのままなら偽", () => {
+    const g = (p: string) =>
+      grantedOnlyByExtension(brief, eff, "Write", { file_path: p }, "C:\\work", "win");
+    expect(g("C:\\work\\docs\\a.md")).toBe(true);
+    expect(g("C:\\WORK\\Docs\\a.md")).toBe(true);
+    expect(g("C:\\work\\src\\a.ts")).toBe(false);
+    expect(g("docs\\a.md")).toBe(false);
+    expect(g("C:docs\\a.md")).toBe(false);
+  });
+  it("Bash: 足した引数がドライブ文字で始まるもの・`..` を含むものは、拡張の許可にしない", () => {
+    const g = (command: string, style?: "win" | "posix") =>
+      grantedOnlyByExtension(
+        { ...brief, allowedCommands: [] },
+        brief,
+        "Bash",
+        { command },
+        "C:\\work",
+        style,
+      );
+    expect(g("pnpm test", "win")).toBe(true);
+    for (const c of ["pnpm test C:foo", "pnpm test c:/x", "pnpm test a/../b"]) {
+      expect(g(c, "win"), c).toBe(false);
+    }
+    // POSIX の形の結果は、変えない
+    expect(g("pnpm test C:foo")).toBe(g("pnpm test x:foo"));
+  });
+});
+
 describe("検査をしない口（lenient）の使い所", () => {
   it("daemon の src で `lenient` を書いているのは、path-resolve.ts の parseTrusted の 1 か所だけ", () => {
     const src = join(import.meta.dirname, "..", "..", "src");
@@ -206,12 +352,14 @@ describe("検査をしない口（lenient）の使い所", () => {
     expect(hits[0]).toMatch(
       /^path-resolve\.ts:\d+: const p = parsePath\(raw, style, \{ lenient: true \}\);$/,
     );
-    // parseTrusted を呼ぶ所は、信頼する側のパスだけ: 範囲の場所（trusted が真）・基準（作業ツリー）・絶対パスにした後の実パス化
+    // parseTrusted を呼ぶ所は、信頼する側のパスだけ: 範囲の場所（trusted が真）・基準（作業ツリー）・実パスどうしの比べ・絶対パスにした後の実パス化
     const text = readFileSync(join(src, "sdk", "path-resolve.ts"), "utf8");
     const calls = text.split("\n").filter((l) => /parseTrusted\(/.test(l) && !/^function /.test(l));
     expect(calls.map((l) => l.trim())).toEqual([
       'const p = trusted ? parseTrusted(raw, "win") : parsePath(raw, "win");',
       'const b = parseTrusted(base, "win");',
+      'const a = parseTrusted(path, "win");',
+      'const b = parseTrusted(root, "win");',
       'const p = parseTrusted(absPath, "win");',
     ]);
   });
