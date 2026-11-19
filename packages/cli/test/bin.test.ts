@@ -142,7 +142,9 @@ describe("touryou（bin）", () => {
         if (p === "/home/u/.touryou/config.json") return JSON.stringify({ stateDir: "/s" });
         throw new Error("no file");
       },
-      readSecret: (p) => {
+      readSecret: (raw) => {
+        // bin は実行中の OS の区切りでパスを作る（Windows では `\`）。試験の仮のパスは `/` の形でそろえる
+        const p = raw.replaceAll("\\", "/");
         reads.push(p);
         if (p === "/s/port") return "7777\n";
         if (p === "/s/human-token") return `${TOKEN}\n`;
@@ -165,7 +167,8 @@ describe("touryou（bin）", () => {
         isTTY: TTY,
         fetch: f,
         readFile: () => JSON.stringify({ stateDir: "/s" }),
-        readSecret: (p) => {
+        readSecret: (raw) => {
+          const p = raw.replaceAll("\\", "/");
           if (p === "/s/port" && port !== undefined) return port;
           if (p === "/s/human-token") return TOKEN;
           throw new Error("no file");

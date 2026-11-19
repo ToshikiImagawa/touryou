@@ -15,7 +15,8 @@ const files = (over: Record<string, string | undefined> = {}) => {
     ...over,
   };
   return (p: string) => {
-    const v = base[p];
+    // ui は実行中の OS の区切りでパスを作る（Windows では `\`）。試験の仮のパスは `/` の形でそろえる
+    const v = base[p.replaceAll("\\", "/")];
     if (v === undefined) throw new Error("missing");
     return v;
   };

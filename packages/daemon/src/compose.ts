@@ -29,7 +29,15 @@ import {
 } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  resolve as resolvePath,
+  win32,
+} from "node:path";
 import {
   DEFAULT_PURGE_TOMBSTONE,
   type EventBody,
@@ -159,7 +167,13 @@ export const pluginDirPortsOf = (
 ): PluginDirPorts => ({
   readFile: (p) => readFileSync(p, "utf8"),
   realpath: (p) => realpathSync.native(p),
-  forbiddenRoots: [config.repoRoot, config.worktreeRoot, config.stateDir, join(home, ".touryou")],
+  // 区切りは、渡された platform の形にする（実行中の OS の形ではない）
+  forbiddenRoots: [
+    config.repoRoot,
+    config.worktreeRoot,
+    config.stateDir,
+    (platform === "win32" ? win32 : posix).join(home, ".touryou"),
+  ],
   foldCase: platform === "darwin" || platform === "win32",
 });
 

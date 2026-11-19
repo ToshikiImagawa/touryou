@@ -124,7 +124,9 @@ describe("touryou hook の設定・port の確かめ", () => {
   it("ACL を確かめられない（分からない）ときも、同じく拒む・黙って通す", async () => {
     for (const target of ["config", "port"] as const) {
       const x = setup();
-      const acl = (p: string) => (p === x[target] ? "ACL を確かめられない（差し替え）" : undefined);
+      // hook は `/` でつないだパスを渡す（Windows では区切りが混ざる）ので、resolve でそろえて比べる
+      const acl = (p: string) =>
+        resolve(p) === resolve(x[target]) ? "ACL を確かめられない（差し替え）" : undefined;
       const f = recorder();
       const denied = await runHook({
         env: { HOME: x.home },

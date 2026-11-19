@@ -234,7 +234,7 @@ describe("touryou child bind", () => {
     const r = await runChild(["bind", "--dir", d, "--url", URL], {
       ...deps(fake.fetch),
       afterCheck: (p) => {
-        if (!p.endsWith(`/${CHILD_FILES.code}`)) return;
+        if (basename(p) !== CHILD_FILES.code) return;
         writeFileSync(`${p}.new`, "ZZZZ-ZZZZ\n", { mode: 0o644 });
         renameSync(`${p}.new`, p);
       },
