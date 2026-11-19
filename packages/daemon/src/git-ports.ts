@@ -339,8 +339,11 @@ export function createGitPorts(
     const out = new Map<string, string>();
     let cur: string | undefined;
     for (const line of r.stdout.split("\n")) {
-      if (line.startsWith("worktree ")) cur = line.slice("worktree ".length);
-      else if (line.startsWith("branch refs/heads/") && cur !== undefined) {
+      // Windows の git は `C:/...` の形で出すので、`pathOf`（`join` の `C:\...`）とそろえる
+      if (line.startsWith("worktree ")) {
+        const p = line.slice("worktree ".length);
+        cur = process.platform === "win32" ? p.replaceAll("/", "\\") : p;
+      } else if (line.startsWith("branch refs/heads/") && cur !== undefined) {
         out.set(cur, line.slice("branch refs/heads/".length));
       }
     }

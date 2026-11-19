@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createGitPorts,
@@ -232,7 +232,7 @@ describe("createGitPorts（実際の git で、作業ツリーの作成・事実
   it("作業ツリーを置き場の配下に作り、同じ nodeId の再要求は同じ結果を返す。cwdOf は作ったものだけ返す", async () => {
     const s = setup();
     const p = await provision(s, "child-1");
-    expect(p.startsWith(`${s.worktreeRoot}/`)).toBe(true);
+    expect(p.startsWith(`${s.worktreeRoot}${sep}`)).toBe(true);
     expect(existsSync(join(p, "a.txt"))).toBe(true);
     expect(await provision(s, "child-1")).toBe(p);
     expect(await s.ports.cwdOf("child-1")).toBe(p);
