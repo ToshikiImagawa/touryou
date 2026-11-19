@@ -15,6 +15,18 @@ import {
 const base = (): string => realpathSync(mkdtempSync(join(tmpdir(), "touryou-git-missing-")));
 
 /** macOS の仮の git（Command Line Tools がない）を真似る: stderr に xcrun のエラーを出し、終了コード 1。 */
+/**
+ * Windows では #!/bin/sh のファイルを直接起動できない。node を仮の git にし、`git status` の `status` を、
+ * 作業ディレクトリに置いたスクリプトとして走らせる（出力と終了コードは sh 版と同じ）。
+ */
+const winFake = (dir: string, message: string, code: number): string => {
+  writeFileSync(
+    join(dir, "status"),
+    `process.stderr.write(${JSON.stringify(`${message}\n`)}); process.exit(${code});\n`,
+  );
+  return process.execPath;
+};
+
 const fakeStub = (dir: string): string => {
   const p = join(dir, "git");
   writeFileSync(
@@ -25,8 +37,19 @@ const fakeStub = (dir: string): string => {
   return p;
 };
 
+/** `git status` だけを呼ぶ試験の仮の git（Windows では node で真似る）。 */
+const fakeStatusStub = (dir: string): string =>
+  process.platform === "win32"
+    ? winFake(
+        dir,
+        "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun",
+        1,
+      )
+    : fakeStub(dir);
+
 /** ふつうに失敗する git（git がないのではない）を真似る。 */
 const fakeOtherFailure = (dir: string): string => {
+  if (process.platform === "win32") return winFake(dir, "fatal: not a git repository", 128);
   const p = join(dir, "git-other");
   writeFileSync(p, '#!/bin/sh\necho "fatal: not a git repository" >&2\nexit 128\n');
   chmodSync(p, 0o755);
@@ -82,7 +105,7 @@ describe("makeNodeGit（git がない）", () => {
 
   it("仮の git: 終了コードはそのまま、stderr の先頭に説明が付き、元の出力も残る", async () => {
     const d = base();
-    const r = await makeNodeGit(fakeStub(d))(["status"], { cwd: d });
+    const r = await makeNodeGit(fakeStatusStub(d))(["status"], { cwd: d });
     expect(r.code).toBe(1);
     expect(r.stderr.startsWith(GIT_MISSING_MESSAGE)).toBe(true);
     expect(r.stderr).toContain("invalid active developer path");
