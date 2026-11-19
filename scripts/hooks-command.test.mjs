@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,11 +14,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { HOOK_COMMAND_GUARD, HOOK_COMMAND_PASSIVE, HOOK_COMMANDS } from "./hook-commands.mjs";
-import { POSIX_ONLY } from "./test-platform.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const made = [];
@@ -25,6 +25,14 @@ after(() => {
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
+/**
+ * sh の最小限の PATH。Windows（Git for Windows の sh・bash。Claude Code も、これで command を走らせる）では、
+ * spawn が env の PATH で sh を探すので、sh のあるディレクトリにする（区切りも `;`）。
+ */
+const MIN_PATH =
+  process.platform === "win32"
+    ? dirname(spawnSync("where", ["sh"], { encoding: "utf8" }).stdout.split(/\r?\n/)[0] ?? "")
+    : "/usr/bin:/bin";
 const hasBash = spawnSync("bash", ["--version"]).status === 0;
 const SHELLS = [["sh", ["-c"]], ...(hasBash ? [["bash", ["--posix", "-c"]]] : [])];
 
@@ -38,7 +46,18 @@ const home = ({ stub = true, executable = true, name = "h", content } = {}) => {
     const f = join(h, ".touryou", "v1", "touryou-darwin-arm64", "bin", "touryou");
     writeFileSync(f, content ?? '#!/bin/sh\necho "STUB args=$*"\ncat\nexit "${STUB_EXIT:-0}"\n');
     chmodSync(f, executable ? 0o755 : 0o644);
-    symlinkSync(join(h, ".touryou", "v1", "touryou-darwin-arm64"), join(h, ".touryou", "current"));
+    try {
+      symlinkSync(
+        join(h, ".touryou", "v1", "touryou-darwin-arm64"),
+        join(h, ".touryou", "current"),
+      );
+    } catch (e) {
+      // Windows で開発者モードがないとリンクを作れない。command は current/bin/touryou のパスだけを見るので、実のディレクトリに置く
+      if (process.platform !== "win32" || e.code !== "EPERM") throw e;
+      cpSync(join(h, ".touryou", "v1", "touryou-darwin-arm64"), join(h, ".touryou", "current"), {
+        recursive: true,
+      });
+    }
   }
   return h;
 };
@@ -47,7 +66,7 @@ const run = (command, env, input = '{"hook_event_name":"PreToolUse"}', shell = S
   spawnSync(shell[0], [...shell[1], command], {
     input,
     // PATH は、sh の最小限だけ（touryou が PATH にあっても、見ないこと・ほかのコマンドに頼らないことの確認）
-    env: { PATH: "/usr/bin:/bin", ...env },
+    env: { PATH: MIN_PATH, ...env },
     encoding: "utf8",
   });
 const CHILD = { TOURYOU_NODE_TOKEN: "t".repeat(16), TOURYOU_DAEMON_URL: "http://127.0.0.1:1" };
@@ -73,7 +92,7 @@ for (const shell of SHELLS) {
     ["拒否版", HOOK_COMMAND_GUARD],
     ["止めない版", HOOK_COMMAND_PASSIVE],
   ]) {
-    const t = (name, fn) => test(`[${shell[0]}] ${label}: ${name}`, { skip: POSIX_ONLY }, fn);
+    const t = (name, fn, opts = {}) => test(`[${shell[0]}] ${label}: ${name}`, opts, fn);
 
     t(
       "① touryou が実行可能なら、実行され、引数は hook、標準入力が渡る。終了コード 0・2 は、そのまま（止めない版は 0）",
@@ -118,14 +137,24 @@ for (const shell of SHELLS) {
       assert.equal(r.status, isGuard(command) ? 2 : 0);
     });
 
-    t("⑥ 実行権がない → 未配置と同じ", () => {
-      const h = home({ executable: false });
-      assert.equal(run(command, { HOME: h }, undefined, shell).status, 0);
-      assert.equal(
-        run(command, { HOME: h, ...CHILD }, undefined, shell).status,
-        isGuard(command) ? 2 : 0,
-      );
-    });
+    t(
+      "⑥ 実行権がない → 未配置と同じ",
+      () => {
+        const h = home({ executable: false });
+        assert.equal(run(command, { HOME: h }, undefined, shell).status, 0);
+        assert.equal(
+          run(command, { HOME: h, ...CHILD }, undefined, shell).status,
+          isGuard(command) ? 2 : 0,
+        );
+      },
+      {
+        // Windows には実行権のビットがない。Git Bash は shebang のあるファイルを実行できるとみなし、chmod 0644 では外せない。
+        // 動かない touryou（壊れた中身・126・127 など）で拒否に倒れることは、下の「壊れた touryou」の試験が Windows でも確かめる
+        skip:
+          process.platform === "win32" &&
+          "Windows には実行権のビットがなく、実行できない touryou を chmod で作れない（動かない touryou は「壊れた touryou」の試験で確かめる）",
+      },
+    );
 
     t("⑦ HOME にスペースが入っていても動く", () => {
       const h = home({ name: "with space" });
@@ -154,7 +183,7 @@ for (const shell of SHELLS) {
       });
       const r = spawnSync(shell[0], [...shell[1], command], {
         input: "x",
-        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: h },
+        env: { PATH: `${bin}${delimiter}${MIN_PATH}`, HOME: h },
         encoding: "utf8",
       });
       assert.doesNotMatch(r.stdout, /PATH の touryou/);
@@ -186,9 +215,7 @@ for (const shell of SHELLS) {
     }
   }
 
-  test(`[${shell[0]}] ③ 未配置で、子の環境変数が両方ある → 拒否版は終了コード 2（理由つき）、止めない版は 0（Stop が詰まらない）`, {
-    skip: POSIX_ONLY,
-  }, () => {
+  test(`[${shell[0]}] ③ 未配置で、子の環境変数が両方ある → 拒否版は終了コード 2（理由つき）、止めない版は 0（Stop が詰まらない）`, () => {
     const h = home({ stub: false });
     const guard = run(HOOK_COMMAND_GUARD, { HOME: h, ...CHILD }, undefined, shell);
     assert.equal(guard.status, 2);

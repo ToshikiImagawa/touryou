@@ -13,14 +13,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test as nodeTest } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MCP_STDIO_ARGS, MCP_STDIO_COMMAND } from "./mcp-stdio-command.mjs";
-import { POSIX_ONLY } from "./test-platform.mjs";
 
-/** このファイルの試験は、どれも sh・bash で配布物のシェルスクリプトを走らせる。 */
-const test = (name, fn) => nodeTest(name, { skip: POSIX_ONLY }, fn);
-
+/**
+ * 中継のシェルスクリプトを走らせる bash。.mcp.json は /bin/bash を指す（その値は下の試験が確かめる）。
+ * Windows には /bin/bash がないので、中継の中身は Git for Windows の bash で走らせて確かめる。
+ */
+const BASH = process.platform === "win32" ? "bash" : "/bin/bash";
 const SHIM = fileURLToPath(new URL("../plugin/scripts/touryou-mcp-shim.sh", import.meta.url));
 const made = [];
 after(() => {
@@ -70,7 +71,7 @@ function placeFake(h) {
 
 /** 中継を起動し、1 行ずつの JSON を読む。 */
 function start(h) {
-  const p = spawn("/bin/bash", [SHIM], {
+  const p = spawn(BASH, [SHIM], {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: h },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -117,7 +118,7 @@ test(".mcp.json の起動は /bin/bash と plugin の中の中継。中継のフ
   assert.equal(MCP_STDIO_COMMAND, "/bin/bash");
   assert.deepEqual(MCP_STDIO_ARGS, ["${CLAUDE_PLUGIN_ROOT}/scripts/touryou-mcp-shim.sh"]);
   assert.ok(existsSync(SHIM));
-  assert.equal(spawnSync("/bin/bash", ["-n", SHIM]).status, 0, "bash の構文");
+  assert.equal(spawnSync(BASH, ["-n", SHIM]).status, 0, "bash の構文");
   const code = readFileSync(SHIM, "utf8")
     .split("\n")
     .filter((l) => !/^\s*#/.test(l))
@@ -128,8 +129,13 @@ test(".mcp.json の起動は /bin/bash と plugin の中の中継。中継のフ
   }
 });
 
-test("HOME が空なら、標準出力に何も出さず、標準エラーに理由を出して終了コード 1", () => {
-  const r = spawnSync("/bin/bash", [SHIM], {
+test("HOME が空なら、標準出力に何も出さず、標準エラーに理由を出して終了コード 1", {
+  // Git for Windows の bash は、空の HOME を起動時に別のパスで埋めるので、中継から空の HOME が見えない（Windows の課題に記録）
+  skip:
+    process.platform === "win32" &&
+    "Git for Windows の bash は空の HOME を埋めるので、空の HOME の分岐を作れない（Windows の課題に記録）",
+}, () => {
+  const r = spawnSync(BASH, [SHIM], {
     env: { PATH: process.env.PATH, HOME: "" },
     encoding: "utf8",
   });
@@ -143,7 +149,7 @@ test("配布物があれば、そのまま touryou-mcp --stdio を exec する",
   mkdirSync(bin(h), { recursive: true });
   writeFileSync(join(bin(h), "touryou-mcp"), '#!/bin/sh\nprintf "args:%s\\n" "$*"\n');
   chmodSync(join(bin(h), "touryou-mcp"), 0o755);
-  const r = spawnSync("/bin/bash", [SHIM], {
+  const r = spawnSync(BASH, [SHIM], {
     env: { PATH: process.env.PATH, HOME: h },
     encoding: "utf8",
   });
