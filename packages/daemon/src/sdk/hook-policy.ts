@@ -24,10 +24,12 @@ import {
   entryWords,
   evaluateScope,
   ownMcpToolOf,
+  type PathStyle,
   type Scope,
   type ScopeViolationReason,
 } from "@touryou/core";
 import { commandEntryProblem } from "./child-permissions.js";
+import { winAbsolute } from "./path-resolve.js";
 import { isReadOnlySearch } from "./read-only-search.js";
 
 /** パスの実パス化（書き込み先の判定用）。解決できなければ reject する。 */
@@ -739,13 +741,20 @@ const denyUnknown = (tool: string): ToolDecision => ({
   reason: `ツール ${tool} は、このノードでは使えない。`,
 });
 
-/** scope の場所（writable・forbidden）を実パスにする。解決できない writable は落とし、forbidden は絶対パスのまま残す。 */
+/**
+ * scope の場所（writable・forbidden）を実パスにする。解決できない writable は落とし、forbidden は絶対パスのまま残す。
+ * `style` が `win` のときは、場所と `cwd` を Windows の形として分けてつなぐ（どちらも信頼する側が決めたパス。検査はしない）。
+ */
 export async function resolveScope(
   scope: Scope,
   cwd: string,
   resolve: ResolvePath,
+  style: PathStyle = "posix",
 ): Promise<Scope> {
-  const abs = (d: string): string => (d.startsWith("/") ? d : `${cwd}/${d}`);
+  const abs = (d: string): string => {
+    if (style === "win") return winAbsolute(d, cwd, true) ?? d;
+    return d.startsWith("/") ? d : `${cwd}/${d}`;
+  };
   const real = async (d: string): Promise<string | undefined> => {
     if (typeof d !== "string" || d.trim() === "" || d.includes("\0")) return undefined;
     try {
@@ -1059,19 +1068,24 @@ function extendsWithSafeArgs(entry: readonly string[], seg: readonly string[]): 
 /**
  * 書き込みの道具の入力のパスを、実パスにした入力を返す（`grantedOnlyByExtension` で、実パスの作業ツリーと比べるため。#91）。
  * 相対パスは `toolCwd` を基準にする。書き込みの道具でない・パスがない・解決できないときは、入力をそのまま返す（比べて偽になる。安全側）。
+ * `style` が `win` のときは、パスを Windows の形として検査してから分ける（判定できない形は、入力をそのまま返す）。
  */
 export async function withRealWritePath(
   toolName: string,
   toolInput: unknown,
   toolCwd: string,
   resolve: ResolvePath,
+  style: PathStyle = "posix",
 ): Promise<unknown> {
   const key = WRITE_TOOLS[toolName];
   if (key === undefined || !isRec(toolInput)) return toolInput;
   const p = toolInput[key];
   if (typeof p !== "string" || p === "") return toolInput;
   try {
-    const abs = p.startsWith("/") ? p : `${toolCwd.replace(/\/+$/, "")}/${p}`;
+    let abs: string | undefined;
+    if (style === "win") abs = winAbsolute(p, toolCwd, false);
+    else abs = p.startsWith("/") ? p : `${toolCwd.replace(/\/+$/, "")}/${p}`;
+    if (abs === undefined) return toolInput;
     return { ...toolInput, [key]: await resolve(abs) };
   } catch {
     return toolInput;

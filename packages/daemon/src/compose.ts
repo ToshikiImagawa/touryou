@@ -37,6 +37,7 @@ import {
   type Failure,
   failure,
   isPathUnder,
+  type PathStyle,
   type Result,
   type ScopeViolationReason,
 } from "@touryou/core";
@@ -229,6 +230,11 @@ export interface DaemonDeps {
    * （持ち主を読む道具が遅いので、起動時に 1 回だけ）。渡さなければ確かめない（POSIX は uid で確かめている）。
    */
   readonly stateDirOwnerCheck?: (dir: string) => string | undefined;
+  /**
+   * フックの判定が扱うパスの形。渡さなければ、起動するときに `process.platform` から 1 度だけ決める
+   * （Windows は `win`、ほかは `posix`）。
+   */
+  readonly pathStyle?: PathStyle;
   /**
    * 取り消せない操作の確認コードを書く先（Desktop の木だけ）。既定は制御端末（/dev/tty）。標準エラー（構造化のログ）・
    * 記録・ファイルには書かない。書けなければ例外を投げる（確認待ちを作らない。試験で差し替える）。
@@ -1460,7 +1466,12 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
     return { ok: true, value: undefined };
   };
   const hookNow = deps.monoMs ?? (() => performance.now());
-  const resolveHookPath = (p: string) => resolveForWrite(p, nodeFsOps);
+  // パスの形は、起動するときに 1 度だけ決める（フックの判定は、これを引数で受け取る）
+  const pathStyle: PathStyle = deps.pathStyle ?? (process.platform === "win32" ? "win" : "posix");
+  const resolveHookPath = (p: string) => resolveForWrite(p, nodeFsOps, pathStyle);
+  // 判定の本体（decideToolUse・isReadOnlySearch）は、まだ POSIX の形だけを扱う。Windows の形のパスは実パスにできず、
+  // 拒否になる（判定の本体を Windows の形に対応させるまで、許可の側に倒さない）。
+  const resolveForDecide = (p: string) => resolveForWrite(p, nodeFsOps);
   const decideDesktopHook = async (
     nodeId: string,
     toolName: string,
@@ -1513,14 +1524,14 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
           "見張り（フック）の設定が外された（または、daemon が置いた設定がない）ため、すべて拒否する。人（親）に知らせる。",
       };
     }
-    const resolved = await resolveScope(scope, wt, resolveHookPath);
-    const homeSettings = await Promise.all(userSettingsFiles().map((f) => resolveHookPath(f)));
+    const resolved = await resolveScope(scope, wt, resolveHookPath, pathStyle);
+    const homeSettings = await Promise.all(userSettingsFiles().map((f) => resolveForDecide(f)));
     const d = await decideToolUse(
       resolved,
       wt,
       toolName,
       toolInput,
-      resolveHookPath,
+      resolveForDecide,
       {
         roots: [
           ...protectedRoots,
@@ -1651,14 +1662,14 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
           "作業ツリーの git のディレクトリを確かめられないため、書き込みを拒否した。人（親）に知らせる（受信箱に出した）。",
       };
     }
-    const resolved = await resolveScope(scope, wt, resolveHookPath);
+    const resolved = await resolveScope(scope, wt, resolveHookPath, pathStyle);
     const roots = [...protectedRoots, ...otherGitDirsRoot(gitDir)];
     const d = await decideToolUse(
       resolved,
       wt,
       toolName,
       toolInput,
-      resolveHookPath,
+      resolveForDecide,
       {
         // ほかのノードの git のディレクトリ（`.git/worktrees/<ほかの名前>/`。紐付けのコードのファイルがある）は、読み取りも禁じる。
         // 自分の git のディレクトリは除く（自分のコードは mcp が読む。mcp はフックを通らない）。
@@ -1689,14 +1700,14 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
           command,
           here,
           wt,
-          resolveHookPath,
+          resolveForDecide,
           roots.map((r) => r.path),
         ))
       ) {
         return { allow: true, permit: "readOnlySearch" };
       }
       const brief = log.state().nodes.find((n) => n.id === nodeId)?.scope;
-      const input = await withRealWritePath(toolName, toolInput, here, resolveHookPath);
+      const input = await withRealWritePath(toolName, toolInput, here, resolveHookPath, pathStyle);
       if (brief !== undefined && grantedOnlyByExtension(brief, scope, toolName, input, wt)) {
         return { allow: true, permit: "extension" };
       }
