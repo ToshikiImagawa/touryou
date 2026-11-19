@@ -19,7 +19,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const USAGE = "使い方: node scripts/ui-preview.mjs [--no-open] [--live]\n";
 const args = process.argv.slice(2);
@@ -40,9 +40,9 @@ let core;
 let api;
 let creds;
 try {
-  core = await import(`${R}/core/dist/index.js`);
-  api = await import(`${R}/daemon/dist/api/server.js`);
-  creds = await import(`${R}/daemon/dist/api/credentials.js`);
+  core = await import(pathToFileURL(join(R, "/core/dist/index.js")).href);
+  api = await import(pathToFileURL(join(R, "/daemon/dist/api/server.js")).href);
+  creds = await import(pathToFileURL(join(R, "/daemon/dist/api/credentials.js")).href);
 } catch {
   process.stderr.write(
     "packages の dist がありません。先に pnpm install && pnpm build を実行してください。\n",

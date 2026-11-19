@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runBin } from "../src/bin.js";
 import { runHook } from "../src/hook.js";
@@ -246,7 +247,7 @@ describe("touryou hook（runBin）", () => {
 
 describe("実プロセス（ビルド済みの bin。`pnpm build` のあと）", () => {
   const dist = new URL("../dist/hook.js", import.meta.url);
-  const bin = new URL("../dist/bin.js", import.meta.url).pathname;
+  const bin = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
   // dist がない・古い（hook を持たない）ときだけ、飛ばす。`pnpm check`（CI）は、build のあとに動くので、必ず実行される
   const built = existsSync(dist);
   const run = (env: Record<string, string>, input = pre) =>

@@ -46,12 +46,15 @@ test("ui-preview: --no-open で立ち、止めると一時の stateDir を消す
     const s = await fetch(`${base}/v1/ui/state`);
     assert.equal(s.status, 401);
     await s.text();
-    const code = await new Promise((resolve) => {
-      child.on("exit", resolve);
-      child.kill("SIGINT");
-    });
-    assert.equal(code, 0);
-    assert.equal(existsSync(join(tmp, created[0])), false);
+    // Windows には SIGINT を届ける手段がなく（kill は強制終了になる）、止めたときの後始末を確かめられない。
+    if (process.platform !== "win32") {
+      const code = await new Promise((resolve) => {
+        child.on("exit", resolve);
+        child.kill("SIGINT");
+      });
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(tmp, created[0])), false);
+    }
   } finally {
     child.kill("SIGKILL");
   }

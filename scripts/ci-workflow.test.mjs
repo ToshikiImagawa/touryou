@@ -6,6 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const read = (f) => readFileSync(new URL(`../.github/workflows/${f}`, import.meta.url), "utf8");
 const ci = read("ci.yml");
@@ -99,7 +100,7 @@ test("ci.yml: docs などだけの変更では、checkout と判定のあとの�
 });
 
 const codeChanged = (files) =>
-  spawnSync("bash", [new URL("./ci-code-changed.sh", import.meta.url).pathname], {
+  spawnSync("bash", [fileURLToPath(new URL("./ci-code-changed.sh", import.meta.url))], {
     input: files.map((f) => `${f}\n`).join(""),
     encoding: "utf8",
   }).stdout.trim();
@@ -130,7 +131,7 @@ test("ci.yml・ci-macos.yml は、同じ ref の前の実行を止める（concu
 });
 
 // コミットのメールの確かめ（scripts/ci-commit-emails.sh）。一時の git のリポジトリで、許す形・外れる形を確かめる。
-const EMAILS_SH = new URL("./ci-commit-emails.sh", import.meta.url).pathname;
+const EMAILS_SH = fileURLToPath(new URL("./ci-commit-emails.sh", import.meta.url));
 
 function tempRepo() {
   const dir = mkdtempSync(join(tmpdir(), "ci-emails-"));
