@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { failure, ok } from "@touryou/core";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { sockPath } from "./sock-path.js";
 import { parseSse, startNodeSubscriber } from "../src/node-subscriber.js";
 import {
   framesOf,
@@ -29,7 +30,7 @@ afterEach(() => {
 const listen = async (): Promise<{ path: string; received: () => string }> => {
   const dir = mkdtempSync(join(tmpdir(), "touryou-notify-"));
   dirs.push(dir);
-  const path = join(dir, "s.sock");
+  const path = sockPath(dir);
   let buf = "";
   const server = createServer((c) => {
     c.setEncoding("utf8");

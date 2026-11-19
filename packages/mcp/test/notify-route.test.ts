@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ok } from "@touryou/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sockPath } from "./sock-path.js";
 import { proofOf } from "../src/identity.js";
 import { createToolServer, type Relay } from "../src/index.js";
 import { createNodeCredentialStore } from "../src/node-credential.js";
@@ -37,7 +38,7 @@ const tmp = (): string => {
   return d;
 };
 const listen = async (): Promise<string> => {
-  const path = join(tmp(), "s.sock");
+  const path = sockPath(tmp());
   const server = createServer((c) => c.resume());
   servers.push(server);
   await new Promise<void>((r) => server.listen(path, () => r()));
