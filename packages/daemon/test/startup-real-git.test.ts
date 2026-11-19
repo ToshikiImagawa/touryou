@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Daemon } from "../src/compose.js";
 import { loadWorktreePorts } from "../src/loaders.js";
@@ -64,96 +64,100 @@ const setup = () => {
 };
 
 describe("起動を、実物の git の口（loadWorktreePorts）を通して確かめる", () => {
-  it("touryou-daemon の読み込みで git の口を得て起動する。CLI の子の spawn は、親への起動の依頼になり、コードは作業ツリーの git のディレクトリのファイルにだけある", async () => {
-    const s = setup();
-    const out: string[] = [];
-    const err: string[] = [];
-    const r = await main(["--config", s.path], {
-      loadWorktreePorts, // 実物の git の口（./git-ports.js を読み込む）
-      stdout: (t) => out.push(t),
-      stderr: (t) => err.push(t),
-    });
-    expect(r.exitCode, err.join("")).toBe(0);
-    if (r.daemon) running.push(r.daemon);
-    const url = /(http:\/\/127\.0\.0\.1:\d+)/.exec(out.join(""))?.[1] as string;
-    const rootToken = readFileSync(join(s.config.stateDir, "root-token"), "utf8").trim();
-    const call = async (requestId: string, operation: string, params: unknown) => {
-      const res = await fetch(`${url}/v1/request`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${rootToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ requestId, operation, params }),
+  // 途中で plugin の置き場のリンクを作る
+  it.skipIf(!CAN_SYMLINK)(
+    "touryou-daemon の読み込みで git の口を得て起動する。CLI の子の spawn は、親への起動の依頼になり、コードは作業ツリーの git のディレクトリのファイルにだけある",
+    async () => {
+      const s = setup();
+      const out: string[] = [];
+      const err: string[] = [];
+      const r = await main(["--config", s.path], {
+        loadWorktreePorts, // 実物の git の口（./git-ports.js を読み込む）
+        stdout: (t) => out.push(t),
+        stderr: (t) => err.push(t),
       });
-      return (await res.json()) as {
-        ok: boolean;
-        value?: Record<string, unknown>;
-        error?: { code: string };
+      expect(r.exitCode, err.join("")).toBe(0);
+      if (r.daemon) running.push(r.daemon);
+      const url = /(http:\/\/127\.0\.0\.1:\d+)/.exec(out.join(""))?.[1] as string;
+      const rootToken = readFileSync(join(s.config.stateDir, "root-token"), "utf8").trim();
+      const call = async (requestId: string, operation: string, params: unknown) => {
+        const res = await fetch(`${url}/v1/request`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${rootToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ requestId, operation, params }),
+        });
+        return (await res.json()) as {
+          ok: boolean;
+          value?: Record<string, unknown>;
+          error?: { code: string };
+        };
       };
-    };
-    const spawned = await call("sp-real-1", "node.spawn", {
-      parentId: "root",
-      role: "implement",
-      objective: "UI を直す",
-      acceptanceCriteria: ["テストが通る"],
-      scope: {
-        writableLocations: ["src/ui"],
-        forbiddenLocations: [".git"],
-        allowedCommands: ["pnpm test"],
-      },
-    });
-    expect(spawned.ok, JSON.stringify(spawned)).toBe(true);
-    const nodeId = spawned.value?.nodeId as string;
-    expect(spawned.value?.status).toBe("running");
-    const wt = realpathSync(
-      git(s.config.repoRoot, "worktree", "list", "--porcelain")
-        .split("\n")
-        .filter((l) => l.startsWith("worktree "))
-        .map((l) => l.slice("worktree ".length))
-        .find((p) => p.startsWith(s.config.worktreeRoot)) as string,
-    );
-    const gitDir = git(wt, "rev-parse", "--absolute-git-dir");
-    const codePath = join(gitDir, "touryou-bind-code");
-    const st = lstatSync(codePath);
-    expect(st.isFile()).toBe(true);
-    expect(fileMode(codePath)).toBe(0o600);
-    const code = readFileSync(codePath, "utf8").trim();
-    expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    // 依頼の中身: コードは入らない。作業ツリーと名前は入る
-    // 組み立てで、plugin の場所の確かめが handler に渡る: 外の plugin は実パスで付き、作業ツリーの中は付かない
-    const pluginBase = realpathSync(mkdtempSync(join(tmpdir(), "touryou-plugin-")));
-    const plugin = join(pluginBase, "real");
-    mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
-    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), '{"name":"touryou"}');
-    symlinkSync(plugin, join(pluginBase, "link"));
-    const withPlugin = await call("pr-0", "parent.request", {
-      nodeId,
-      pluginRoot: join(pluginBase, "link"),
-    });
-    expect(withPlugin.ok, JSON.stringify(withPlugin)).toBe(true);
-    expect(withPlugin.value?.command as string).toContain(` --plugin-dir ${plugin} `);
-    const fake = join(wt, "fake-plugin");
-    mkdirSync(join(fake, ".claude-plugin"), { recursive: true });
-    writeFileSync(join(fake, ".claude-plugin", "plugin.json"), '{"name":"touryou"}');
-    const inTree = await call("pr-00", "parent.request", { nodeId, pluginRoot: fake });
-    expect(inTree.value?.command as string).not.toContain("--plugin-dir");
-    const req = await call("pr-1", "parent.request", { nodeId, model: "opus", effort: "high" });
-    expect(req.ok, JSON.stringify(req)).toBe(true);
-    const command = req.value?.command as string;
-    expect(command).toContain(`cd ${wt} && claude --bg`);
-    expect(command).toContain("--model opus --effort high");
-    expect(command).not.toContain(code);
-    // 作業ツリーの一番上でない cwd の紐付けは断られ、コードは残る
-    const bindAt = (cwd: string) =>
-      fetch(`${url}/v1/bind`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ nodeId, bindCode: code, cwd }),
+      const spawned = await call("sp-real-1", "node.spawn", {
+        parentId: "root",
+        role: "implement",
+        objective: "UI を直す",
+        acceptanceCriteria: ["テストが通る"],
+        scope: {
+          writableLocations: ["src/ui"],
+          forbiddenLocations: [".git"],
+          allowedCommands: ["pnpm test"],
+        },
       });
-    expect((await bindAt(s.config.repoRoot)).status).toBe(401);
-    expect(lstatSync(codePath).isFile()).toBe(true);
-    // 正しい作業ツリーでは通り、daemon がファイルを消す
-    expect((await bindAt(wt)).status).toBe(200);
-    expect(existsSync(codePath)).toBe(false);
-  });
+      expect(spawned.ok, JSON.stringify(spawned)).toBe(true);
+      const nodeId = spawned.value?.nodeId as string;
+      expect(spawned.value?.status).toBe("running");
+      const wt = realpathSync(
+        git(s.config.repoRoot, "worktree", "list", "--porcelain")
+          .split("\n")
+          .filter((l) => l.startsWith("worktree "))
+          .map((l) => resolve(l.slice("worktree ".length)))
+          .find((p) => p.startsWith(s.config.worktreeRoot)) as string,
+      );
+      const gitDir = git(wt, "rev-parse", "--absolute-git-dir");
+      const codePath = join(gitDir, "touryou-bind-code");
+      const st = lstatSync(codePath);
+      expect(st.isFile()).toBe(true);
+      expect(fileMode(codePath)).toBe(0o600);
+      const code = readFileSync(codePath, "utf8").trim();
+      expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      // 依頼の中身: コードは入らない。作業ツリーと名前は入る
+      // 組み立てで、plugin の場所の確かめが handler に渡る: 外の plugin は実パスで付き、作業ツリーの中は付かない
+      const pluginBase = realpathSync(mkdtempSync(join(tmpdir(), "touryou-plugin-")));
+      const plugin = join(pluginBase, "real");
+      mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+      writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), '{"name":"touryou"}');
+      symlinkSync(plugin, join(pluginBase, "link"));
+      const withPlugin = await call("pr-0", "parent.request", {
+        nodeId,
+        pluginRoot: join(pluginBase, "link"),
+      });
+      expect(withPlugin.ok, JSON.stringify(withPlugin)).toBe(true);
+      expect(withPlugin.value?.command as string).toContain(` --plugin-dir ${plugin} `);
+      const fake = join(wt, "fake-plugin");
+      mkdirSync(join(fake, ".claude-plugin"), { recursive: true });
+      writeFileSync(join(fake, ".claude-plugin", "plugin.json"), '{"name":"touryou"}');
+      const inTree = await call("pr-00", "parent.request", { nodeId, pluginRoot: fake });
+      expect(inTree.value?.command as string).not.toContain("--plugin-dir");
+      const req = await call("pr-1", "parent.request", { nodeId, model: "opus", effort: "high" });
+      expect(req.ok, JSON.stringify(req)).toBe(true);
+      const command = req.value?.command as string;
+      expect(command).toContain(`cd ${wt} && claude --bg`);
+      expect(command).toContain("--model opus --effort high");
+      expect(command).not.toContain(code);
+      // 作業ツリーの一番上でない cwd の紐付けは断られ、コードは残る
+      const bindAt = (cwd: string) =>
+        fetch(`${url}/v1/bind`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeId, bindCode: code, cwd }),
+        });
+      expect((await bindAt(s.config.repoRoot)).status).toBe(401);
+      expect(lstatSync(codePath).isFile()).toBe(true);
+      // 正しい作業ツリーでは通り、daemon がファイルを消す
+      expect((await bindAt(wt)).status).toBe(200);
+      expect(existsSync(codePath)).toBe(false);
+    },
+  );
 
   it("daemon の再起動のあと: 残ったファイルは起動時に消え、受信箱に「紐付けをやり直して」が出る。node.bindCode でファイルを書き直すと紐付けられる。ほかの子の作業ツリーの cwd は断られる", async () => {
     const s = setup();
@@ -197,8 +201,11 @@ describe("起動を、実物の git の口（loadWorktreePorts）を通して確
     const b = await spawn(first.url, "sp-b", "B を直す");
     const trees = git(s.config.repoRoot, "worktree", "list", "--porcelain")
       .split("\n")
-      .filter((l) => l.startsWith("worktree ") && l.includes(s.config.worktreeRoot))
-      .map((l) => realpathSync(l.slice("worktree ".length)));
+      .filter((l) => l.startsWith("worktree "))
+      // Windows の git は C:/... の形で出すので、resolve で区切りをそろえてから比べる
+      .map((l) => resolve(l.slice("worktree ".length)))
+      .filter((p) => p.startsWith(s.config.worktreeRoot))
+      .map((p) => realpathSync(p));
     const wtOf = (id: string) =>
       trees.find(
         (t) =>
@@ -260,7 +267,8 @@ describe("起動を、実物の git の口（loadWorktreePorts）を通して確
     const before = await rebindCount(a);
     expect((await bindAt(second.url, "ZZZZZZZZZZZZZZZZZZZZZZZZZZ", wtOf(a))).status).toBe(401);
     expect(await rebindCount(a)).toBe(before);
-  });
+    // 実物の git で 2 回起動し、子を 2 つ作る。Windows の git は遅く、既定の 5 秒を超えることがある
+  }, 30_000);
 
   it.skipIf(!CAN_SYMLINK)(
     "git の口が失敗したら、notConfigured ではなく、原因つきの失敗で起動しない",
