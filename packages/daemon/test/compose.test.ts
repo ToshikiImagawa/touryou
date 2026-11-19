@@ -2466,7 +2466,7 @@ describe("Desktop の子（childRuntime: desktop・仮置き）", () => {
     expect(existsSync(b.drawer)).toBe(false);
   });
 
-  it("作業ツリーの .claude がリンクなら、spawn は失敗する", async () => {
+  it.skipIf(!CAN_SYMLINK)("作業ツリーの .claude がリンクなら、spawn は失敗する", async () => {
     const base = desktopRig();
     const elsewhere = mkdtempSync(join(tmpdir(), "touryou-else-"));
     const worktree = {
