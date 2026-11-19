@@ -7,6 +7,7 @@
  */
 
 import type { Failure, Result } from "@touryou/core";
+import { winOwnerProblem } from "@touryou/core/fs";
 import { createDaemon, type Daemon, type WorktreePorts } from "./compose.js";
 import { type DaemonConfig, loadConfigFile } from "./config.js";
 import { isPort, StartFailure } from "./port-file.js";
@@ -23,6 +24,11 @@ export interface MainDeps {
    * 渡さなければ、この確かめを省く。
    */
   readonly checkRepo?: (repoRoot: string) => Promise<Result<undefined, Failure>>;
+  /**
+   * 状態の置き場の持ち主の確かめ（問題があれば理由を返す）。渡さなければ、Windows では `winOwnerProblem`
+   * （PowerShell を 1 回呼ぶ。約 1 秒）、ほかの OS では確かめない（uid で確かめている）。
+   */
+  readonly stateDirOwnerCheck?: (dir: string) => string | undefined;
 }
 
 export interface MainResult {
@@ -110,6 +116,12 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<Mai
     ...(deps.onFatal === undefined ? {} : { onFatal: deps.onFatal }),
     ...(port === undefined ? {} : { port }),
     configPath,
+    // Windows: 状態の置き場の持ち主を、起動時に 1 回だけ確かめる
+    ...(deps.stateDirOwnerCheck !== undefined
+      ? { stateDirOwnerCheck: deps.stateDirOwnerCheck }
+      : process.platform === "win32"
+        ? { stateDirOwnerCheck: winOwnerProblem }
+        : {}),
   });
   if (!made.ok) {
     deps.stderr(formatFailure(made.error));

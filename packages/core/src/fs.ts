@@ -223,6 +223,90 @@ export function ownUid(platform: NodeJS.Platform = process.platform): number | u
   return platform === "win32" ? 0 : process.getuid?.();
 }
 
+/** 持ち主として許す相手（SYSTEM・Administrators）。自分のほかに。昇格した処理が作ったものは、持ち主が Administrators になる。 */
+const WIN_OWNER_TRUSTED = new Set(["S-1-5-18", "S-1-5-32-544"]);
+const OWNER_TIMEOUT_MS = 20_000;
+/** 持ち主の SID を 1 行で出す（パスは環境変数で渡す。コマンドの文字列には入れない）。 */
+const OWNER_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  "$ProgressPreference='SilentlyContinue'",
+  "$p=$env:TOURYOU_ACL_PATH",
+  "$s=[System.Security.AccessControl.AccessControlSections]::Owner",
+  "if([System.IO.Directory]::Exists($p)){$a=New-Object System.Security.AccessControl.DirectorySecurity($p,$s)}" +
+    "else{$a=New-Object System.Security.AccessControl.FileSecurity($p,$s)}",
+  "$a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value",
+].join(";");
+
+/** 既定の道具: 持ち主の SID を PowerShell（.NET）で読む。起動に 1 秒ほどかかるので、起動時の 1 回の確かめにだけ使う。 */
+export function defaultWinOwnerSid(path: string): string | undefined {
+  try {
+    const r = spawnSync(
+      join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      ),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(OWNER_SCRIPT, "utf16le").toString("base64"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: OWNER_TIMEOUT_MS,
+        windowsHide: true,
+        env: { ...process.env, TOURYOU_ACL_PATH: path },
+      },
+    );
+    if (r.error !== undefined || r.signal !== null || r.status !== 0) return undefined;
+    const sid = String(r.stdout).trim();
+    return /^S-1-[0-9-]+$/.test(sid) ? sid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface WinOwnerOps {
+  /** 既定は `process.platform`。Windows でなければ、何も確かめない（POSIX は uid で確かめる）。 */
+  readonly platform?: NodeJS.Platform;
+  /** 持ち主の SID を読む道具（試験で差し替える）。 */
+  readonly ownerSid?: (path: string) => string | undefined;
+  /** 自分の SID を読む道具（試験で差し替える）。 */
+  readonly selfSid?: () => string | undefined;
+}
+
+/**
+ * Windows: 持ち主が、自分・SYSTEM・Administrators のどれでもなければ、理由を返す（分からないときは拒む）。
+ * 持ち主は、ACL に何と書いてあっても、あとから ACL を付け替えられる。ACL の確かめ（`aclProblem`）と組で使う。
+ * 持ち主を読む道具が遅いので、状態の置き場のディレクトリを、起動時に 1 回だけ確かめる
+ * （置き場に、ほかの利用者の許可がなく、持ち主も信頼できれば、中のものをほかの利用者は作れない）。
+ */
+export function winOwnerProblem(path: string, ops: WinOwnerOps = {}): string | undefined {
+  if ((ops.platform ?? process.platform) !== "win32") return undefined;
+  const unknown = "持ち主を確かめられない（ない・リンク・PowerShell が失敗した・時間切れ）";
+  const full = resolve(path);
+  // .NET も、要素の末尾の `.`・空白を取り除く（別のものを見る）
+  if (full.split(/[\\/]/).some((seg) => /[. ]$/.test(seg))) return unknown;
+  const look = (): bigint | undefined => {
+    try {
+      const st = lstatSync(full, { bigint: true });
+      return st.isSymbolicLink() ? undefined : st.ino;
+    } catch {
+      return undefined;
+    }
+  };
+  const before = look();
+  if (before === undefined) return unknown;
+  const owner = (ops.ownerSid ?? defaultWinOwnerSid)(full);
+  const self = (ops.selfSid ?? defaultWinAcl.selfSid)();
+  if (owner === undefined || self === undefined || look() !== before) return unknown;
+  if (owner === self || WIN_OWNER_TRUSTED.has(owner)) return undefined;
+  return "持ち主が、自分・SYSTEM・Administrators のどれでもない（icacls /setowner で直す）";
+}
+
 interface LsLine {
   readonly ino: string;
   readonly mode: string;

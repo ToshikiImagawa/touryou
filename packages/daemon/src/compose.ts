@@ -225,6 +225,11 @@ export interface DaemonDeps {
   /** 運用の記録（1 行の JSON。秘密を含めない）。既定は標準エラー。 */
   readonly logLine?: (line: string) => void;
   /**
+   * 状態の置き場の持ち主の確かめ（問題があれば理由を返す）。Windows の起動口が `winOwnerProblem` を渡す
+   * （持ち主を読む道具が遅いので、起動時に 1 回だけ）。渡さなければ確かめない（POSIX は uid で確かめている）。
+   */
+  readonly stateDirOwnerCheck?: (dir: string) => string | undefined;
+  /**
    * 取り消せない操作の確認コードを書く先（Desktop の木だけ）。既定は制御端末（/dev/tty）。標準エラー（構造化のログ）・
    * 記録・ファイルには書かない。書けなければ例外を投げる（確認待ちを作らない。試験で差し替える）。
    */
@@ -272,7 +277,10 @@ const fail = (code: string, cause: string, ...next: [string, ...string[]]) => ({
   error: failure(code, cause, ...next),
 });
 
-function prepareStateDir(dir: string): Failure | undefined {
+function prepareStateDir(
+  dir: string,
+  ownerCheck?: (dir: string) => string | undefined,
+): Failure | undefined {
   try {
     let exists = true;
     try {
@@ -293,6 +301,8 @@ function prepareStateDir(dir: string): Failure | undefined {
       const why = defaultAclCheck(dir, undefined, "private");
       if (why !== undefined) throw new Error(why);
     }
+    const owner = ownerCheck?.(dir);
+    if (owner !== undefined) throw new Error(owner);
     return undefined;
   } catch (e) {
     return failure(
@@ -451,7 +461,7 @@ export function createDaemon(config: DaemonConfig, deps: DaemonDeps): Result<Dae
     note("legacyConfigIgnored", { keys: [...config.ignoredLegacyKeys] });
   }
 
-  const dirProblem = prepareStateDir(config.stateDir);
+  const dirProblem = prepareStateDir(config.stateDir, deps.stateDirOwnerCheck);
   if (dirProblem !== undefined) return { ok: false, error: dirProblem };
   const overlap = realOverlap(config);
   if (overlap !== undefined) {

@@ -52,6 +52,8 @@ const setup = (over: Record<string, unknown> = {}) => {
     loadWorktreePorts: async () => ok(worktree),
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
+    // 本物の持ち主の確かめ（Windows は PowerShell で約 1 秒）は core の fs.test で確かめる。ここでは飛ばす
+    stateDirOwnerCheck: () => undefined,
   };
   return { path, out, err, deps, config };
 };

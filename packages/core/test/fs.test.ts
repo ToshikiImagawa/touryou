@@ -29,6 +29,7 @@ import {
   readSecureFile,
   SecureFileError,
   winAclProblemOfSddl,
+  winOwnerProblem,
 } from "../src/fs.js";
 
 const isMac = process.platform === "darwin";
@@ -139,6 +140,28 @@ describe("Windows の ACL（SDDL の判定。どの OS でも動く）", () => {
     expect(modeString(p, { platform: "win32", win: mk(undefined) })).toBeUndefined();
     expect(modeString(join(d, "none"), { platform: "win32", win: mk(own) })).toBeUndefined();
   });
+  it("winOwnerProblem: 持ち主が自分・SYSTEM・Administrators なら問題なし。ほかの相手・分からないときは拒む", () => {
+    const { d, p } = file();
+    const ops = (owner: string | undefined, self: string | undefined = ME) => ({
+      platform: "win32" as const,
+      ownerSid: () => owner,
+      selfSid: () => self,
+    });
+    for (const owner of [ME, "S-1-5-18", "S-1-5-32-544"]) {
+      expect(winOwnerProblem(d, ops(owner)), owner).toBeUndefined();
+      expect(winOwnerProblem(p, ops(owner)), owner).toBeUndefined();
+    }
+    expect(winOwnerProblem(d, ops("S-1-5-21-1-2-3-1002"))).toContain("持ち主が");
+    expect(winOwnerProblem(d, ops("S-1-1-0"))).toContain("持ち主が");
+    const unknown = "持ち主を確かめられない";
+    expect(winOwnerProblem(d, ops(undefined))).toContain(unknown);
+    expect(winOwnerProblem(d, { ...ops(ME), selfSid: () => undefined })).toContain(unknown);
+    expect(winOwnerProblem(join(d, "none"), ops(ME))).toContain(unknown);
+    const link = join(d, "link");
+    if (trySymlink(p, link)) expect(winOwnerProblem(link, ops(ME))).toContain(unknown);
+    // Windows でなければ、何も確かめない（uid で確かめている）
+    expect(winOwnerProblem(d, { platform: "linux", ownerSid: () => "S-1-1-0" })).toBeUndefined();
+  });
   it("permMode・ownUid・aclLevelOf: Windows の mode・uid は、締まった値に読み替える", () => {
     expect(permMode(0o100644, "linux")).toBe(0o644);
     expect(permMode(0o100666, "win32")).toBe(0o600);
@@ -176,6 +199,12 @@ describe.runIf(isWin)("Windows の本物のファイル（icacls）", () => {
     expect(aclProblem(target)).toBeUndefined();
     expect(aclProblem(junction)).toContain(WHY);
   });
+  it("winOwnerProblem: 自分が作ったファイル・ディレクトリの持ち主は、本物の道具で読めて問題なし", () => {
+    const { d, p } = file();
+    expect(winOwnerProblem(d)).toBeUndefined();
+    expect(winOwnerProblem(p)).toBeUndefined();
+    expect(winOwnerProblem(`${p}.`)).toContain("持ち主を確かめられない");
+  }, 30_000);
   it("fd を渡すと、通ったものを覚える。ACL を付け替えると（ctime が変わり）確かめ直す", () => {
     const { p } = file();
     const check = () => {

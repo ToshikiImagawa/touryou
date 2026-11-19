@@ -321,6 +321,23 @@ describe("createDaemon（組み立てて、窓口まで起動する）", () => {
     expect(plain.logs.some((l) => l.includes("legacyConfigIgnored"))).toBe(false);
   });
 
+  it("持ち主の確かめ（Windows の起動口が渡す）が理由を返したら、起動に失敗する。置き場を渡して 1 回だけ呼ぶ", () => {
+    const r = rig();
+    const seen: string[] = [];
+    const a = createDaemon(r.config, {
+      ...r.deps,
+      stateDirOwnerCheck: (dir) => {
+        seen.push(dir);
+        return "持ち主が違う";
+      },
+    });
+    expect(a.ok).toBe(false);
+    if (!a.ok) {
+      expect(a.error.code).toBe("stateDirInvalid");
+      expect(a.error.cause).toContain("持ち主が違う");
+    }
+    expect(seen).toEqual([r.config.stateDir]);
+  });
   it("置き場の権限が緩い・根の役割が違う・ストアが壊れているときは、起動に失敗する（例外にしない）", async () => {
     const loose = rig();
     mkdirSync(loose.config.stateDir, { mode: 0o777 });
