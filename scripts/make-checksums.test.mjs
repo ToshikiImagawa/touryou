@@ -148,7 +148,12 @@ test("release.yml の許可リストは、checksums.json を（ルート直下�
   }
 });
 
-test("release.yml は、改行を含む名前のファイルを、zip に入れる前に弾く（行ごとの許可リストをすり抜けさせない）", () => {
+test("release.yml は、改行を含む名前のファイルを、zip に入れる前に弾く（行ごとの許可リストをすり抜けさせない）", {
+  // release.yml は macOS の runner で動く。Windows のファイル名には改行を入れられない
+  skip:
+    process.platform === "win32" &&
+    "Windows のファイル名には改行を入れられない（release.yml は macOS の runner で動く）",
+}, () => {
   const yml = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "..", ".github", "workflows", "release.yml"),
     "utf8",

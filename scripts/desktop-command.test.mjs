@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { buildChecksums } from "./make-checksums.mjs";
+import { POSIX_ONLY } from "./test-platform.mjs";
 
 const text = readFileSync(new URL("../plugin/commands/desktop.md", import.meta.url), "utf8");
 const front = /^---\n([\s\S]*?)\n---\n/.exec(text);
@@ -97,7 +98,10 @@ function verify(mcpbBytes, tarBytes = "tar") {
   }
 }
 
-test("手順 4（実行）: .mcpb の sha256 が一致するときだけ 1。違う・tar.gz の中身を .mcpb の名前で置いたときは止まる", () => {
+// shasum・ls -l@ は macOS のコマンド
+test("手順 4（実行）: .mcpb の sha256 が一致するときだけ 1。違う・tar.gz の中身を .mcpb の名前で置いたときは止まる", {
+  skip: POSIX_ONLY,
+}, () => {
   const ok = verify("mcpb");
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(ok.stdout, "1\n");

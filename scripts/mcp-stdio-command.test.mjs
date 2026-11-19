@@ -13,10 +13,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, test as nodeTest } from "node:test";
+import { fileURLToPath } from "node:url";
 import { MCP_STDIO_ARGS, MCP_STDIO_COMMAND } from "./mcp-stdio-command.mjs";
+import { POSIX_ONLY } from "./test-platform.mjs";
 
-const SHIM = new URL("../plugin/scripts/touryou-mcp-shim.sh", import.meta.url).pathname;
+/** このファイルの試験は、どれも sh・bash で配布物のシェルスクリプトを走らせる。 */
+const test = (name, fn) => nodeTest(name, { skip: POSIX_ONLY }, fn);
+
+const SHIM = fileURLToPath(new URL("../plugin/scripts/touryou-mcp-shim.sh", import.meta.url));
 const made = [];
 after(() => {
   for (const d of made) rmSync(d, { recursive: true, force: true });

@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { HOOK_COMMAND_GUARD, HOOK_COMMAND_PASSIVE, HOOK_COMMANDS } from "./hook-commands.mjs";
+import { POSIX_ONLY } from "./test-platform.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const made = [];
@@ -72,7 +73,7 @@ for (const shell of SHELLS) {
     ["拒否版", HOOK_COMMAND_GUARD],
     ["止めない版", HOOK_COMMAND_PASSIVE],
   ]) {
-    const t = (name, fn) => test(`[${shell[0]}] ${label}: ${name}`, fn);
+    const t = (name, fn) => test(`[${shell[0]}] ${label}: ${name}`, { skip: POSIX_ONLY }, fn);
 
     t(
       "① touryou が実行可能なら、実行され、引数は hook、標準入力が渡る。終了コード 0・2 は、そのまま（止めない版は 0）",
@@ -185,7 +186,9 @@ for (const shell of SHELLS) {
     }
   }
 
-  test(`[${shell[0]}] ③ 未配置で、子の環境変数が両方ある → 拒否版は終了コード 2（理由つき）、止めない版は 0（Stop が詰まらない）`, () => {
+  test(`[${shell[0]}] ③ 未配置で、子の環境変数が両方ある → 拒否版は終了コード 2（理由つき）、止めない版は 0（Stop が詰まらない）`, {
+    skip: POSIX_ONLY,
+  }, () => {
     const h = home({ stub: false });
     const guard = run(HOOK_COMMAND_GUARD, { HOME: h, ...CHILD }, undefined, shell);
     assert.equal(guard.status, 2);

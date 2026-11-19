@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { POSIX_ONLY } from "./test-platform.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const text = readFileSync(join(root, "plugin", "commands", "setup.md"), "utf8");
@@ -199,7 +200,9 @@ const runConfig = (shell, home, repo, wt, cmds = '"git status"') => {
 const SHELLS = ["bash", "sh", ...(spawnSync("zsh", ["--version"]).status === 0 ? ["zsh"] : [])];
 
 for (const shell of SHELLS) {
-  test(`[${shell}] 手順 2（実行）: 必須の 5 項目の JSON を、600 で 1 回だけ書く。ホームの外・git でない・すでにある、は書かない`, () => {
+  test(`[${shell}] 手順 2（実行）: 必須の 5 項目の JSON を、600 で 1 回だけ書く。ホームの外・git でない・すでにある、は書かない`, {
+    skip: POSIX_ONLY,
+  }, () => {
     const home = mkdtempSync(join(tmpdir(), "touryou-setup-cfg-"));
     made.push(home);
     const repo = join(home, "repo");
