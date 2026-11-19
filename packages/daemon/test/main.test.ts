@@ -15,6 +15,7 @@ import { failure, ok } from "@touryou/core";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Daemon, WorktreePorts } from "../src/compose.js";
 import { type MainDeps, main } from "../src/main.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const running: Daemon[] = [];
 afterEach(async () => {
@@ -224,19 +225,22 @@ describe("窓口のポートの決め方（port-file.ts）", () => {
     }
   });
 
-  it("ポートのファイルがシンボリックリンクなら、起動しない（portFileInvalid。リンク先は読まない）", async () => {
-    const s = setup();
-    expect((await start(s)).exitCode).toBe(0);
-    await stopAll();
-    const file = join(s.config.stateDir, "port");
-    const target = join(s.config.stateDir, "elsewhere");
-    writeFileSync(target, "40001\n", { mode: 0o600 });
-    unlinkSync(file);
-    symlinkSync(target, file);
-    expect((await start(s)).exitCode).toBe(1);
-    expect(s.err.join("")).toContain("portFileInvalid");
-    expect(s.err.join("")).toContain("シンボリックリンク");
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "ポートのファイルがシンボリックリンクなら、起動しない（portFileInvalid。リンク先は読まない）",
+    async () => {
+      const s = setup();
+      expect((await start(s)).exitCode).toBe(0);
+      await stopAll();
+      const file = join(s.config.stateDir, "port");
+      const target = join(s.config.stateDir, "elsewhere");
+      writeFileSync(target, "40001\n", { mode: 0o600 });
+      unlinkSync(file);
+      symlinkSync(target, file);
+      expect((await start(s)).exitCode).toBe(1);
+      expect(s.err.join("")).toContain("portFileInvalid");
+      expect(s.err.join("")).toContain("シンボリックリンク");
+    },
+  );
 });
 
 describe("--check-config（起動せず、設定だけを検査する）", () => {

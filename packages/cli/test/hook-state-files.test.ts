@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runHook } from "../src/hook.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const isMac = process.platform === "darwin";
 const made: string[] = [];
@@ -96,25 +97,28 @@ describe("touryou hook の設定・port の確かめ", () => {
     ],
   ];
   for (const [name, brk] of breakers) {
-    it(`${name}: 印のある作業ツリーでは拒み（送らない）、印のないところでは黙って通す`, async () => {
-      const x = setup();
-      brk(x);
-      const f = recorder();
-      const denied = await runHook({
-        env: { HOME: x.home },
-        input: pre(x.marked),
-        fetchImpl: f.fetchImpl,
-      });
-      expect(denied.code).toBe(2);
-      expect(denied.stderr).toContain("touryou の子の作業ツリー");
-      const silent = await runHook({
-        env: { HOME: x.home },
-        input: pre(x.plain),
-        fetchImpl: f.fetchImpl,
-      });
-      expect(silent).toEqual({ code: 0, stderr: "" });
-      expect(f.urls).toEqual([]);
-    });
+    it.skipIf(name.endsWith("リンク") && !CAN_SYMLINK)(
+      `${name}: 印のある作業ツリーでは拒み（送らない）、印のないところでは黙って通す`,
+      async () => {
+        const x = setup();
+        brk(x);
+        const f = recorder();
+        const denied = await runHook({
+          env: { HOME: x.home },
+          input: pre(x.marked),
+          fetchImpl: f.fetchImpl,
+        });
+        expect(denied.code).toBe(2);
+        expect(denied.stderr).toContain("touryou の子の作業ツリー");
+        const silent = await runHook({
+          env: { HOME: x.home },
+          input: pre(x.plain),
+          fetchImpl: f.fetchImpl,
+        });
+        expect(silent).toEqual({ code: 0, stderr: "" });
+        expect(f.urls).toEqual([]);
+      },
+    );
   }
 
   it("ACL を確かめられない（分からない）ときも、同じく拒む・黙って通す", async () => {

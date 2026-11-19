@@ -17,6 +17,7 @@ import {
   gitEnv,
   nodeGit,
 } from "../src/git-ports.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 // 実際の git を何度も呼ぶ試験が多い。全体を並列に走らせると遅くなるので、時間切れを長めにする（macOS・負荷のある CI でも落ちない）。
 vi.setConfig({ testTimeout: 60_000 });
@@ -474,18 +475,21 @@ describe("createGitPorts（実際の git で、作業ツリーの作成・事実
     expect(r.ok).toBe(false);
   });
 
-  it("置き場・リポジトリが実パスでない（リンクを含む）なら、作れずに失敗する", () => {
-    const base = realpathSync(mkdtempSync(join(tmpdir(), "touryou-git-")));
-    mkdirSync(join(base, "real"));
-    symlinkSync(join(base, "real"), join(base, "link"));
-    const made = createGitPorts({
-      repoRoot: join(base, "real"),
-      worktreeRoot: join(base, "link"),
-      rootCwd: join(base, "real"),
-      rootNodeId: "root",
-    });
-    expect(made.ok).toBe(false);
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "置き場・リポジトリが実パスでない（リンクを含む）なら、作れずに失敗する",
+    () => {
+      const base = realpathSync(mkdtempSync(join(tmpdir(), "touryou-git-")));
+      mkdirSync(join(base, "real"));
+      symlinkSync(join(base, "real"), join(base, "link"));
+      const made = createGitPorts({
+        repoRoot: join(base, "real"),
+        worktreeRoot: join(base, "link"),
+        rootCwd: join(base, "real"),
+        rootNodeId: "root",
+      });
+      expect(made.ok).toBe(false);
+    },
+  );
 
   describe("lossFor（強制の回収で失われるもの）", () => {
     it("作ったばかり（統合済み・きれい）なら、何も失われない", async () => {

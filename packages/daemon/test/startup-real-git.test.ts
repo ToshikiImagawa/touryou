@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Daemon } from "../src/compose.js";
 import { loadWorktreePorts } from "../src/loaders.js";
 import { main } from "../src/main.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const running: Daemon[] = [];
 afterEach(async () => {
@@ -260,22 +261,25 @@ describe("起動を、実物の git の口（loadWorktreePorts）を通して確
     expect(await rebindCount(a)).toBe(before);
   });
 
-  it("git の口が失敗したら、notConfigured ではなく、原因つきの失敗で起動しない", async () => {
-    const s = setup();
-    // repoRoot をリンク経由にして、createGitPorts を失敗させる
-    const link = join(s.base, "repo-link");
-    symlinkSync(s.config.repoRoot, link);
-    writeFileSync(s.path, JSON.stringify({ ...s.config, repoRoot: link, rootCwd: link }), {
-      mode: 0o600,
-    });
-    const err: string[] = [];
-    const r = await main(["--config", s.path], {
-      loadWorktreePorts,
-      stdout: () => undefined,
-      stderr: (t) => err.push(t),
-    });
-    expect(r.exitCode).toBe(1);
-    expect(err.join("")).toContain("invalidConfig");
-    expect(err.join("")).not.toContain("notConfigured");
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "git の口が失敗したら、notConfigured ではなく、原因つきの失敗で起動しない",
+    async () => {
+      const s = setup();
+      // repoRoot をリンク経由にして、createGitPorts を失敗させる
+      const link = join(s.base, "repo-link");
+      symlinkSync(s.config.repoRoot, link);
+      writeFileSync(s.path, JSON.stringify({ ...s.config, repoRoot: link, rootCwd: link }), {
+        mode: 0o600,
+      });
+      const err: string[] = [];
+      const r = await main(["--config", s.path], {
+        loadWorktreePorts,
+        stdout: () => undefined,
+        stderr: (t) => err.push(t),
+      });
+      expect(r.exitCode).toBe(1);
+      expect(err.join("")).toContain("invalidConfig");
+      expect(err.join("")).not.toContain("notConfigured");
+    },
+  );
 });

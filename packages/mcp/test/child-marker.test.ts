@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { CHILD_WORKTREE_MARKER, detectOpenMode } from "../src/child-marker.js";
 import { runStdio } from "../src/stdio.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 // 子の作業ツリーの印で、mcp の開き方を決める。
 const made: string[] = [];
@@ -198,21 +199,27 @@ describe("印の探し方（submodule・CRLF・symlink の .git）", () => {
     );
     expect(detectOpenMode("/w/a", ops)).toEqual({ kind: "pending", nodeId: "a" });
   });
-  it("`.git` が symlink のリポジトリ（本物のファイル）は、辿った先がディレクトリなので root", async () => {
-    const { symlinkSync } = await import("node:fs");
-    const d = mkdtempSync(join(tmpdir(), "touryou-symlink-"));
-    made.push(d);
-    mkdirSync(join(d, "real-git"));
-    mkdirSync(join(d, "repo"));
-    symlinkSync(join(d, "real-git"), join(d, "repo", ".git"));
-    expect(detectOpenMode(join(d, "repo"))).toEqual({ kind: "root" });
-  });
-  it("`.git` が壊れた symlink なら pending に倒す（上へ探し続けない）", async () => {
-    const { symlinkSync } = await import("node:fs");
-    const d = mkdtempSync(join(tmpdir(), "touryou-broken-"));
-    made.push(d);
-    mkdirSync(join(d, "repo"));
-    symlinkSync(join(d, "missing"), join(d, "repo", ".git"));
-    expect(detectOpenMode(join(d, "repo"))).toEqual({ kind: "pending" });
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "`.git` が symlink のリポジトリ（本物のファイル）は、辿った先がディレクトリなので root",
+    async () => {
+      const { symlinkSync } = await import("node:fs");
+      const d = mkdtempSync(join(tmpdir(), "touryou-symlink-"));
+      made.push(d);
+      mkdirSync(join(d, "real-git"));
+      mkdirSync(join(d, "repo"));
+      symlinkSync(join(d, "real-git"), join(d, "repo", ".git"));
+      expect(detectOpenMode(join(d, "repo"))).toEqual({ kind: "root" });
+    },
+  );
+  it.skipIf(!CAN_SYMLINK)(
+    "`.git` が壊れた symlink なら pending に倒す（上へ探し続けない）",
+    async () => {
+      const { symlinkSync } = await import("node:fs");
+      const d = mkdtempSync(join(tmpdir(), "touryou-broken-"));
+      made.push(d);
+      mkdirSync(join(d, "repo"));
+      symlinkSync(join(d, "missing"), join(d, "repo", ".git"));
+      expect(detectOpenMode(join(d, "repo"))).toEqual({ kind: "pending" });
+    },
+  );
 });

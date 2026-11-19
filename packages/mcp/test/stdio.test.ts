@@ -12,6 +12,7 @@ import {
   runStdio,
   type StdioTarget,
 } from "../src/stdio.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const TOKEN = "abcdefghijklmnopqrstuvwxyz012345";
 const made: string[] = [];
@@ -114,7 +115,7 @@ describe("touryou-mcp --stdio の接続先とトークン", () => {
     }
   });
 
-  it("置き場がリンクなら失敗する", () => {
+  it.skipIf(!CAN_SYMLINK)("置き場がリンクなら失敗する", () => {
     const { h } = home();
     const target = join(h, "elsewhere");
     mkdirSync(target, { mode: 0o700 });

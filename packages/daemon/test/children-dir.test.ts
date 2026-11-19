@@ -26,6 +26,7 @@ import {
   safeCause as safeCauseOf,
   tmutilFailureKind,
 } from "../src/children-dir.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const made: string[] = [];
 const state = () => {
@@ -93,37 +94,43 @@ describe("子の引き出しの置き場", () => {
     expect(() => d.create("node-b")).toThrow("実のディレクトリでない");
   });
 
-  it("消すときはリンクをたどらない（引き出しがリンクならリンクだけ、中のリンクの先も消さない）", () => {
-    const s = state();
-    const d = prepareChildrenDirs(s, { exclude: noExclude });
-    const outside = state();
-    writeFileSync(join(outside, "keep"), "x");
-    const dir = d.create("node-a");
-    symlinkSync(outside, join(dir, "link"));
-    d.remove("node-a");
-    expect(existsSync(dir)).toBe(false);
-    expect(existsSync(join(outside, "keep"))).toBe(true);
-    symlinkSync(outside, join(d.root, d.keyOf("node-b")));
-    d.remove("node-b");
-    expect(existsSync(join(outside, "keep"))).toBe(true);
-    d.remove("node-c"); // なければ何もしない
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "消すときはリンクをたどらない（引き出しがリンクならリンクだけ、中のリンクの先も消さない）",
+    () => {
+      const s = state();
+      const d = prepareChildrenDirs(s, { exclude: noExclude });
+      const outside = state();
+      writeFileSync(join(outside, "keep"), "x");
+      const dir = d.create("node-a");
+      symlinkSync(outside, join(dir, "link"));
+      d.remove("node-a");
+      expect(existsSync(dir)).toBe(false);
+      expect(existsSync(join(outside, "keep"))).toBe(true);
+      symlinkSync(outside, join(d.root, d.keyOf("node-b")));
+      d.remove("node-b");
+      expect(existsSync(join(outside, "keep"))).toBe(true);
+      d.remove("node-c"); // なければ何もしない
+    },
+  );
 
-  it("要る子の鍵でない引き出し（片付いた子・知らない名前・ファイル・リンク）を消す", () => {
-    const s = state();
-    prepareChildrenDirs(s, { exclude: noExclude }); // 1 回目（秘密を作る起動）
-    const d = prepareChildrenDirs(s, { exclude: noExclude });
-    const live = d.create("live");
-    const stale = d.create("stopped");
-    writeFileSync(join(d.root, "stray.txt"), "x");
-    const outside = state();
-    writeFileSync(join(outside, "keep"), "x");
-    symlinkSync(outside, join(d.root, "link"));
-    expect(d.sweep(["live"])).toEqual({ removed: 3, failed: 0 });
-    expect(existsSync(live)).toBe(true);
-    expect(existsSync(stale)).toBe(false);
-    expect(existsSync(join(outside, "keep"))).toBe(true);
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "要る子の鍵でない引き出し（片付いた子・知らない名前・ファイル・リンク）を消す",
+    () => {
+      const s = state();
+      prepareChildrenDirs(s, { exclude: noExclude }); // 1 回目（秘密を作る起動）
+      const d = prepareChildrenDirs(s, { exclude: noExclude });
+      const live = d.create("live");
+      const stale = d.create("stopped");
+      writeFileSync(join(d.root, "stray.txt"), "x");
+      const outside = state();
+      writeFileSync(join(outside, "keep"), "x");
+      symlinkSync(outside, join(d.root, "link"));
+      expect(d.sweep(["live"])).toEqual({ removed: 3, failed: 0 });
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(join(outside, "keep"))).toBe(true);
+    },
+  );
 
   it("Time Machine から外す処理は、置き場のパスだけで呼ぶ。失敗は警告だけで続ける", async () => {
     const s = state();

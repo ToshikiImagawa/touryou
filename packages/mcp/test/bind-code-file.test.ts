@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BIND_CODE_FILE, readCodeFile } from "../src/bind-code-file.js";
 import { proofOf } from "../src/identity.js";
 import { openPendingStdioSession } from "../src/stdio.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const CODE = "0123456789ABCDEFGHJKMNPQRS";
 const made: string[] = [];
@@ -170,7 +171,7 @@ describe("child_bind を引数なしで呼ぶ（紐付け待ちのセッショ�
 });
 
 describe("git のディレクトリそのものがリンク", () => {
-  it("gitdir: の先がリンクなら、コードのファイルを読まない", () => {
+  it.skipIf(!CAN_SYMLINK)("gitdir: の先がリンクなら、コードのファイルを読まない", () => {
     const t = tree();
     const real = join(t.base, "realgit");
     mkdirSync(real);

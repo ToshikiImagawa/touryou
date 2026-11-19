@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createCredentialStore } from "../../src/api/credentials.js";
 import { loadOrCreateHumanToken } from "../../src/api/human-token.js";
 import { FileTokenRepository, MemoryTokenRepository } from "../../src/api/token-repository.js";
+import { CAN_SYMLINK } from "../symlink-support.js";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -121,7 +122,7 @@ describe("保存先の安全性（ディレクトリ・ファイルの検査）"
     expect(() => new FileTokenRepository(join(sub, "tokens.json")).load()).not.toThrow();
   });
 
-  it("ディレクトリがシンボリックリンクなら失敗する", () => {
+  it.skipIf(!CAN_SYMLINK)("ディレクトリがシンボリックリンクなら失敗する", () => {
     const dir = tmp();
     const real = join(dir, "real");
     mkdirSync(real, { mode: 0o700 });
@@ -131,20 +132,27 @@ describe("保存先の安全性（ディレクトリ・ファイルの検査）"
     );
   });
 
-  it("トークンのファイルは、通常のファイルだけ（シンボリックリンク・ディレクトリは失敗）。所有者がこのプロセスと違えば失敗", () => {
-    const dir = tmp();
-    const real = join(dir, "real.json");
-    new FileTokenRepository(real).put(rec("a"));
-    symlinkSync(real, join(dir, "tokens.json"));
-    expect(() => new FileTokenRepository(join(dir, "tokens.json")).load()).toThrow(
-      /通常のファイル/,
-    );
-    mkdirSync(join(dir, "asdir.json"), { mode: 0o700 });
-    expect(() => new FileTokenRepository(join(dir, "asdir.json")).load()).toThrow(/通常のファイル/);
-    const uid = process.getuid?.() ?? 0;
-    expect(() => new FileTokenRepository(real, { getUid: () => uid + 1 }).load()).toThrow(/所有者/);
-    expect(() => new FileTokenRepository(real, { getUid: () => uid }).load()).not.toThrow();
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "トークンのファイルは、通常のファイルだけ（シンボリックリンク・ディレクトリは失敗）。所有者がこのプロセスと違えば失敗",
+    () => {
+      const dir = tmp();
+      const real = join(dir, "real.json");
+      new FileTokenRepository(real).put(rec("a"));
+      symlinkSync(real, join(dir, "tokens.json"));
+      expect(() => new FileTokenRepository(join(dir, "tokens.json")).load()).toThrow(
+        /通常のファイル/,
+      );
+      mkdirSync(join(dir, "asdir.json"), { mode: 0o700 });
+      expect(() => new FileTokenRepository(join(dir, "asdir.json")).load()).toThrow(
+        /通常のファイル/,
+      );
+      const uid = process.getuid?.() ?? 0;
+      expect(() => new FileTokenRepository(real, { getUid: () => uid + 1 }).load()).toThrow(
+        /所有者/,
+      );
+      expect(() => new FileTokenRepository(real, { getUid: () => uid }).load()).not.toThrow();
+    },
+  );
 
   it("ハッシュや nodeId が重複しているファイルは、不正として失敗する", () => {
     const dir = tmp();

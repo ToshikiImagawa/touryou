@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createGitPorts, nodeGit } from "../src/git-ports.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, {
@@ -113,7 +114,7 @@ describe("作業ツリーへの設定ファイルのコピー", () => {
     expect(git(join(base, "repo"), "worktree", "list").split("\n")).toHaveLength(1);
   });
 
-  it("repoRoot の外を指すリンクは、作業ツリーを作らずに失敗する", async () => {
+  it.skipIf(!CAN_SYMLINK)("repoRoot の外を指すリンクは、作業ツリーを作らずに失敗する", async () => {
     const { base, repoRoot, ports } = setup({ files: ["link"] });
     writeFileSync(join(base, "secret"), "s\n");
     symlinkSync(join(base, "secret"), join(repoRoot, "link"));

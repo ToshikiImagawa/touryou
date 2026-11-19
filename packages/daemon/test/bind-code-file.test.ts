@@ -19,6 +19,7 @@ import {
   removeBindCodeFile,
   writeBindCodeFile,
 } from "../src/bind-code-file.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 /** 追加の作業ツリーの形（`.git` はファイルで、`gitdir:` が共通の git の worktrees/<名前> を指す）を作る。 */
 const tree = () => {
@@ -49,7 +50,7 @@ describe("紐付けのコードのファイル（daemon）", () => {
     expect(removeBindCodeFile(t.wt)).toBe(false);
   });
 
-  it("ファイルの名前がリンクなら書かない（リンクの先を書き換えない）", () => {
+  it.skipIf(!CAN_SYMLINK)("ファイルの名前がリンクなら書かない（リンクの先を書き換えない）", () => {
     const t = tree();
     const victim = join(t.base, "victim");
     writeFileSync(victim, "keep");
@@ -58,7 +59,7 @@ describe("紐付けのコードのファイル（daemon）", () => {
     expect(readFileSync(victim, "utf8")).toBe("keep");
   });
 
-  it("git のディレクトリがリンク・.git がディレクトリなら書かない", () => {
+  it.skipIf(!CAN_SYMLINK)("git のディレクトリがリンク・.git がディレクトリなら書かない", () => {
     const t = tree();
     const real = join(t.base, "elsewhere");
     mkdirSync(real);

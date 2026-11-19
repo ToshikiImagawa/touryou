@@ -19,6 +19,7 @@ import { ROLE_OPERATIONS } from "@touryou/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { runBin } from "../src/bin.js";
 import { CHILD_FILES, REPORT_OPERATIONS, runChild } from "../src/child.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const URL = "http://127.0.0.1:7777";
 const CODE = "ABCD-EFGH";
@@ -196,32 +197,35 @@ describe("touryou child bind", () => {
     expect(fake.sent).toHaveLength(0);
   });
 
-  it("code がリンク・ハードリンク・書き込みの権限が緩い・大きすぎる・ないときは、送らない（リンクの先は消さない）", async () => {
-    const fake = daemon();
-    const outside = drawer();
-    writeFileSync(join(outside, "secret"), CODE, { mode: 0o600 });
-    const cases: [string, (d: string) => void][] = [
-      ["codeInvalid", (d) => symlinkSync(join(outside, "secret"), join(d, CHILD_FILES.code))],
-      ["codeInvalid", (d) => linkSync(join(outside, "secret"), join(d, CHILD_FILES.code))],
-      [
-        "codeInvalid",
-        (d) => {
-          writeCode(d);
-          chmodSync(join(d, CHILD_FILES.code), 0o666);
-        },
-      ],
-      ["codeInvalid", (d) => writeCode(d, "x".repeat(100))],
-      ["codeMissing", () => undefined],
-    ];
-    for (const [want, make] of cases) {
-      const d = drawer();
-      make(d);
-      const r = await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch));
-      expect(r.stdout, want).toBe(`${want}\n`);
-    }
-    expect(fake.sent).toHaveLength(0);
-    expect(readFileSync(join(outside, "secret"), "utf8")).toBe(CODE);
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "code がリンク・ハードリンク・書き込みの権限が緩い・大きすぎる・ないときは、送らない（リンクの先は消さない）",
+    async () => {
+      const fake = daemon();
+      const outside = drawer();
+      writeFileSync(join(outside, "secret"), CODE, { mode: 0o600 });
+      const cases: [string, (d: string) => void][] = [
+        ["codeInvalid", (d) => symlinkSync(join(outside, "secret"), join(d, CHILD_FILES.code))],
+        ["codeInvalid", (d) => linkSync(join(outside, "secret"), join(d, CHILD_FILES.code))],
+        [
+          "codeInvalid",
+          (d) => {
+            writeCode(d);
+            chmodSync(join(d, CHILD_FILES.code), 0o666);
+          },
+        ],
+        ["codeInvalid", (d) => writeCode(d, "x".repeat(100))],
+        ["codeMissing", () => undefined],
+      ];
+      for (const [want, make] of cases) {
+        const d = drawer();
+        make(d);
+        const r = await runChild(["bind", "--dir", d, "--url", URL], deps(fake.fetch));
+        expect(r.stdout, want).toBe(`${want}\n`);
+      }
+      expect(fake.sent).toHaveLength(0);
+      expect(readFileSync(join(outside, "secret"), "utf8")).toBe(CODE);
+    },
+  );
 
   it("確かめたあとに code が差し替えられたら、読まずに失敗する（fstat の ino）", async () => {
     const d = drawer();
@@ -581,42 +585,45 @@ describe("touryou child report の本文のファイル", () => {
     return d;
   };
 
-  it("report は送る前に消す。リンク・ハードリンク・大きすぎる・ないときは送らない", async () => {
-    const d = bound();
-    const fake = daemon({
-      request: (body) => {
-        expect(existsSync(join(d, CHILD_FILES.report))).toBe(false);
-        expect(body.params).toEqual({ text: "進んだ" });
-        return { status: 200, json: { ok: true, value: { accepted: true } } };
-      },
-    });
-    const r = await runChild(
-      ["report", "--dir", d, "--url", URL, "progress"],
-      withReport(d, "進んだ\n", fake.fetch),
-    );
-    expect(r.exitCode).toBe(0);
-    const n = fake.sent.length;
-    const outside = drawer();
-    writeFileSync(join(outside, "secret"), "x", { mode: 0o600 });
-    const cases: [string, (x: string) => void][] = [
-      ["reportInvalid", (x) => symlinkSync(join(outside, "secret"), join(x, CHILD_FILES.report))],
-      ["reportInvalid", (x) => linkSync(join(outside, "secret"), join(x, CHILD_FILES.report))],
-      ["reportInvalid", (x) => writeFileSync(join(x, CHILD_FILES.report), "y".repeat(70 * 1024))],
-      ["reportMissing", () => undefined],
-    ];
-    for (const [want, make] of cases) {
-      const x = bound();
-      make(x);
-      const res = await runChild(
-        ["report", "--dir", x, "--url", URL, "progress"],
-        deps(fake.fetch),
+  it.skipIf(!CAN_SYMLINK)(
+    "report は送る前に消す。リンク・ハードリンク・大きすぎる・ないときは送らない",
+    async () => {
+      const d = bound();
+      const fake = daemon({
+        request: (body) => {
+          expect(existsSync(join(d, CHILD_FILES.report))).toBe(false);
+          expect(body.params).toEqual({ text: "進んだ" });
+          return { status: 200, json: { ok: true, value: { accepted: true } } };
+        },
+      });
+      const r = await runChild(
+        ["report", "--dir", d, "--url", URL, "progress"],
+        withReport(d, "進んだ\n", fake.fetch),
       );
-      expect(res.stdout, want).toBe(`${want}\n`);
-      expect(res.stderr).toContain("Write");
-    }
-    expect(fake.sent.length).toBe(n);
-    expect(readFileSync(join(outside, "secret"), "utf8")).toBe("x");
-  });
+      expect(r.exitCode).toBe(0);
+      const n = fake.sent.length;
+      const outside = drawer();
+      writeFileSync(join(outside, "secret"), "x", { mode: 0o600 });
+      const cases: [string, (x: string) => void][] = [
+        ["reportInvalid", (x) => symlinkSync(join(outside, "secret"), join(x, CHILD_FILES.report))],
+        ["reportInvalid", (x) => linkSync(join(outside, "secret"), join(x, CHILD_FILES.report))],
+        ["reportInvalid", (x) => writeFileSync(join(x, CHILD_FILES.report), "y".repeat(70 * 1024))],
+        ["reportMissing", () => undefined],
+      ];
+      for (const [want, make] of cases) {
+        const x = bound();
+        make(x);
+        const res = await runChild(
+          ["report", "--dir", x, "--url", URL, "progress"],
+          deps(fake.fetch),
+        );
+        expect(res.stdout, want).toBe(`${want}\n`);
+        expect(res.stderr).toContain("Write");
+      }
+      expect(fake.sent.length).toBe(n);
+      expect(readFileSync(join(outside, "secret"), "utf8")).toBe("x");
+    },
+  );
 });
 
 describe("touryou child hook", () => {

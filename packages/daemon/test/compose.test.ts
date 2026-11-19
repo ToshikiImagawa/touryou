@@ -44,6 +44,7 @@ import { EventLog } from "../src/eventlog.js";
 import { EXTERNAL_CHECK_SUMMARY } from "../src/external-check.js";
 import { openSqliteStore } from "../src/sqlite-store.js";
 import { FakeCliAdapter, type FakeCliSession } from "./sdk/fakes.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -446,7 +447,7 @@ describe("起動の安全", () => {
     expect(readdirSync(r.config.stateDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
   });
 
-  it("リンクを解決すると置き場が重なる設定は、起動に失敗する", () => {
+  it.skipIf(!CAN_SYMLINK)("リンクを解決すると置き場が重なる設定は、起動に失敗する", () => {
     const r = rig();
     const link = join(tmp(), "link");
     symlinkSync(r.config.worktreeRoot, link);
@@ -455,27 +456,33 @@ describe("起動の安全", () => {
     if (!made.ok) expect(made.error.code).toBe("invalidConfig");
   });
 
-  it("子の作業ツリーの置き場が、リンクを解決すると stateDir の中にある設定も、起動に失敗する", () => {
-    const r = rig();
-    mkdirSync(r.config.stateDir, { recursive: true, mode: 0o700 });
-    const inside = join(r.config.stateDir, "wt");
-    mkdirSync(inside);
-    const link = join(tmp(), "wtlink");
-    symlinkSync(inside, link);
-    const made = createDaemon({ ...r.config, worktreeRoot: link }, r.deps);
-    expect(made.ok).toBe(false);
-    if (!made.ok) expect(made.error.code).toBe("invalidConfig");
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "子の作業ツリーの置き場が、リンクを解決すると stateDir の中にある設定も、起動に失敗する",
+    () => {
+      const r = rig();
+      mkdirSync(r.config.stateDir, { recursive: true, mode: 0o700 });
+      const inside = join(r.config.stateDir, "wt");
+      mkdirSync(inside);
+      const link = join(tmp(), "wtlink");
+      symlinkSync(inside, link);
+      const made = createDaemon({ ...r.config, worktreeRoot: link }, r.deps);
+      expect(made.ok).toBe(false);
+      if (!made.ok) expect(made.error.code).toBe("invalidConfig");
+    },
+  );
 
-  it("まだないパスでも、最も深い既存の祖先を実パスにして重なりを確かめる（リンクの先の、まだない作業ツリーの置き場）", () => {
-    const r = rig();
-    mkdirSync(r.config.stateDir, { recursive: true, mode: 0o700 });
-    const link = join(tmp(), "statelink");
-    symlinkSync(r.config.stateDir, link);
-    const made = createDaemon({ ...r.config, worktreeRoot: join(link, "not-yet", "wt") }, r.deps);
-    expect(made.ok).toBe(false);
-    if (!made.ok) expect(made.error.code).toBe("invalidConfig");
-  });
+  it.skipIf(!CAN_SYMLINK)(
+    "まだないパスでも、最も深い既存の祖先を実パスにして重なりを確かめる（リンクの先の、まだない作業ツリーの置き場）",
+    () => {
+      const r = rig();
+      mkdirSync(r.config.stateDir, { recursive: true, mode: 0o700 });
+      const link = join(tmp(), "statelink");
+      symlinkSync(r.config.stateDir, link);
+      const made = createDaemon({ ...r.config, worktreeRoot: join(link, "not-yet", "wt") }, r.deps);
+      expect(made.ok).toBe(false);
+      if (!made.ok) expect(made.error.code).toBe("invalidConfig");
+    },
+  );
 
   it("起動時に子の引き出しの置き場（0700）を作り、要る子の鍵でない引き出しを消す", async () => {
     const r = rig();
@@ -2136,70 +2143,74 @@ describe("Desktop の子（childRuntime: desktop・仮置き）", () => {
     expect(r0Logs(base)).toContain("hookSettingsExists");
   });
 
-  it("見張りの設定・利用者の設定・info/exclude への書き込みは拒否。設定を書き換えたら、以後はすべて拒否し、受信箱に 1 度知らせる。範囲違反は scope.violation に記録", async () => {
-    // HOME をリンクにする（macOS の /var → /private/var と同じ形。実パスで比べないと外れる）
-    const realHome = mkdtempSync(join(tmpdir(), "touryou-home-"));
-    const home = `${realHome}-link`;
-    symlinkSync(realHome, home);
-    // 見回り（既定 2 秒おき）が、書き換えとフックの間に入ると、トークンが先に失効して 401 になり、フックの中の検出（「外された」）を
-    // 確かめられない。負荷の高い実行で起きるので、この試験では見回りを最長（60 秒）にして、フックの中の検出だけを確かめる。
-    const r = desktopRig({ hookSettingsCheckSeconds: 60 });
-    r.deps = { ...r.deps, parentEnv: { ...r.deps.parentEnv, HOME: home } } as typeof r.deps;
-    r0 = r;
-    const d = await boot(r);
-    const nodeId = await spawnDesktop(d);
-    const b = await bindByInstruction(d, nodeId);
-    const hookLine = b.bindLine.replace(" child bind ", " child hook ");
-    const write = (file_path: string) =>
-      runHook(hookLine, {
+  it.skipIf(!CAN_SYMLINK)(
+    "見張りの設定・利用者の設定・info/exclude への書き込みは拒否。設定を書き換えたら、以後はすべて拒否し、受信箱に 1 度知らせる。範囲違反は scope.violation に記録",
+    async () => {
+      // HOME をリンクにする（macOS の /var → /private/var と同じ形。実パスで比べないと外れる）
+      const realHome = mkdtempSync(join(tmpdir(), "touryou-home-"));
+      const home = `${realHome}-link`;
+      symlinkSync(realHome, home);
+      // 見回り（既定 2 秒おき）が、書き換えとフックの間に入ると、トークンが先に失効して 401 になり、フックの中の検出（「外された」）を
+      // 確かめられない。負荷の高い実行で起きるので、この試験では見回りを最長（60 秒）にして、フックの中の検出だけを確かめる。
+      const r = desktopRig({ hookSettingsCheckSeconds: 60 });
+      r.deps = { ...r.deps, parentEnv: { ...r.deps.parentEnv, HOME: home } } as typeof r.deps;
+      r0 = r;
+      const d = await boot(r);
+      const nodeId = await spawnDesktop(d);
+      const b = await bindByInstruction(d, nodeId);
+      const hookLine = b.bindLine.replace(" child bind ", " child hook ");
+      const write = (file_path: string) =>
+        runHook(hookLine, {
+          hook_event_name: "PreToolUse",
+          session_id: "desktop-session-1",
+          tool_name: "Write",
+          tool_input: { file_path, content: "{}" },
+          cwd: b.worktree,
+        });
+      for (const f of [
+        join(b.worktree, ".claude", "settings.json"),
+        join(b.worktree, ".claude", "settings.local.json"),
+        join(home, ".claude", "settings.json"),
+      ]) {
+        const w = await write(f);
+        expect(w.code, f).toBe(2);
+        expect(w.stderr).toContain("見張り（フック）の設定");
+      }
+      // 作業ツリーの .claude/ は、読むことはできる（commands など）
+      const read = await runHook(hookLine, {
         hook_event_name: "PreToolUse",
         session_id: "desktop-session-1",
-        tool_name: "Write",
-        tool_input: { file_path, content: "{}" },
+        tool_name: "Read",
+        tool_input: { file_path: join(b.worktree, ".claude", "settings.json") },
         cwd: b.worktree,
       });
-    for (const f of [
-      join(b.worktree, ".claude", "settings.json"),
-      join(b.worktree, ".claude", "settings.local.json"),
-      join(home, ".claude", "settings.json"),
-    ]) {
-      const w = await write(f);
-      expect(w.code, f).toBe(2);
-      expect(w.stderr).toContain("見張り（フック）の設定");
-    }
-    // 作業ツリーの .claude/ は、読むことはできる（commands など）
-    const read = await runHook(hookLine, {
-      hook_event_name: "PreToolUse",
-      session_id: "desktop-session-1",
-      tool_name: "Read",
-      tool_input: { file_path: join(b.worktree, ".claude", "settings.json") },
-      cwd: b.worktree,
-    });
-    expect(read.code, read.stderr).toBe(0);
-    const state = d.daemon.log.state();
-    expect(state.inbox.some((x) => x.kind === "violation" && x.nodeId === nodeId)).toBe(true);
-    // 受信箱の項目は、フックが拒んだことをはっきり言う（Issue #6）
-    expect(
-      state.inbox.some(
-        (x) =>
-          x.kind === "violation" && x.nodeId === nodeId && x.summary?.includes("フックが拒んだ"),
-      ),
-    ).toBe(true);
-    // 子がスクリプトなどで書き換えた形
-    writeFileSync(join(b.worktree, ".claude", "settings.json"), "{}");
-    const after = await b.hook("pnpm test");
-    expect(after.code).toBe(2);
-    expect(after.stderr).toContain("外された");
-    await b.hook("pnpm test");
-    const notices = d.daemon.log
-      .state()
-      .inbox.filter((x) => x.summary?.includes("見張り（フック）が外された"));
-    expect(notices).toHaveLength(1);
-    // 書き戻している（daemon が置いた中身に戻っている）
-    expect(readFileSync(join(b.worktree, ".claude", "settings.json"), "utf8")).not.toBe("{}");
-    rmSync(home, { force: true });
-    rmSync(realHome, { recursive: true, force: true });
-  }, 15_000); // 子のプロセス（touryou child hook・bind・report）を 8 回起動するので、macOS の CI で既定の 5 秒を越えることがある
+      expect(read.code, read.stderr).toBe(0);
+      const state = d.daemon.log.state();
+      expect(state.inbox.some((x) => x.kind === "violation" && x.nodeId === nodeId)).toBe(true);
+      // 受信箱の項目は、フックが拒んだことをはっきり言う（Issue #6）
+      expect(
+        state.inbox.some(
+          (x) =>
+            x.kind === "violation" && x.nodeId === nodeId && x.summary?.includes("フックが拒んだ"),
+        ),
+      ).toBe(true);
+      // 子がスクリプトなどで書き換えた形
+      writeFileSync(join(b.worktree, ".claude", "settings.json"), "{}");
+      const after = await b.hook("pnpm test");
+      expect(after.code).toBe(2);
+      expect(after.stderr).toContain("外された");
+      await b.hook("pnpm test");
+      const notices = d.daemon.log
+        .state()
+        .inbox.filter((x) => x.summary?.includes("見張り（フック）が外された"));
+      expect(notices).toHaveLength(1);
+      // 書き戻している（daemon が置いた中身に戻っている）
+      expect(readFileSync(join(b.worktree, ".claude", "settings.json"), "utf8")).not.toBe("{}");
+      rmSync(home, { force: true });
+      rmSync(realHome, { recursive: true, force: true });
+    },
+    15_000,
+  ); // 子のプロセス（touryou child hook・bind・report）を 8 回起動するので、macOS の CI で既定の 5 秒を越えることがある
 
   it("子のスクリプトが settings.json を消す → daemon が数秒で見つけ、書き戻し、トークンを失効させ、受信箱に知らせ、以後を拒否 → node.bindCode を出し直すと戻る", async () => {
     const r = desktopRig({ hookSettingsCheckSeconds: 1 });

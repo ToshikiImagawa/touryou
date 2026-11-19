@@ -17,6 +17,7 @@ import {
   readIdentityFileSecure,
 } from "../src/identity.js";
 import { createRelay } from "../src/relay.js";
+import { CAN_SYMLINK } from "./symlink-support.js";
 
 const DAEMON_ID = "00112233445566778899aabbccddeeff";
 const SECRET = "ff".repeat(32);
@@ -576,7 +577,7 @@ describe("readIdentityFileSecure（O_NOFOLLOW・fstat。daemon の assertSecureF
     expect(() => readIdentityFileSecure(write("loose", mode))).toThrow();
   });
 
-  it("symlink は辿らない（リンク先が正しいファイルでも拒否）", () => {
+  it.skipIf(!CAN_SYMLINK)("symlink は辿らない（リンク先が正しいファイルでも拒否）", () => {
     const real = write("real", 0o600);
     const link = join(dir, "link");
     symlinkSync(real, link);
