@@ -11,7 +11,7 @@
  *   ファイルシステム（macOS の既定など）で `src/SECRET` が禁止場所 `src/secret` をすり抜けるのを防ぐ。
  *   Windows の絶対パス（`C:\...`・`\\server\share\...`）は、POSIX の形（`/C:/...`）に読み替えてから比べる。作業ツリーが
  *   Windows の形のときは、相対パスの `\` も区切りとして扱い、別の名前が同じものを指す形（末尾の `.`・空白、8.3 形式の短い名前、
- *   代替データストリーム、`\\?\`）を含む書き込みは拒否する。予約名（`CON`・`NUL` など）は見ない。
+ *   代替データストリーム、`\\?\`）と予約デバイス名（`CON`・`NUL` など）を含む書き込みは拒否する。パスの部品は path.ts にある。
  *   書式制御文字（Cf、ゼロ幅文字など）を含むパスは、HFS+ が無視して別名と同一視するため拒否する。
  *   区別するファイルシステムでは過剰に拒否するだけで、安全側に倒れる。
  * - 範囲の設定（場所・コマンドの一覧）が不正なときは、書き込みとコマンドをすべて拒否する（フェイルクローズ）。
@@ -19,6 +19,18 @@
  * 構造上の限界: 許可したコマンドの中身（`pnpm test` が走らせるスクリプトなど）が行う書き込みは、この判定では
  * 見えない。コマンドの許可は「そのコマンドを信頼する」ことと同義であり、許可リストは最小にする。
  */
+
+import {
+  hasFormatChar,
+  hasNul,
+  isAbsolutePath,
+  isUnderForm,
+  isWinAbs,
+  resolvePosixForm,
+  winPathProblem,
+} from "./path.js";
+
+export { isAbsolutePath };
 
 /** spec 4.2 の Scope。 */
 export interface Scope {
@@ -59,69 +71,13 @@ const deny = (reason: ScopeViolationReason, subject: string): ScopeDecision => (
   subject,
 });
 
-/** Windows の絶対パス（`C:\...`・`C:/...`・`\\server\share\...`）か。 */
-const isWinAbs = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
-
-/** 絶対パスか（POSIX の `/...` か、Windows の絶対パス）。 */
-export const isAbsolutePath = (path: string): boolean => path.startsWith("/") || isWinAbs(path);
-
-/**
- * Windows の絶対パスを、POSIX の形に読み替える（`C:\a\b` → `/C:/a/b`、`\\srv\share\a` → `/UNC/srv/share/a`）。
- * 比べるための形で、ファイルを開くのには使わない。Windows の絶対パスでなければ、そのまま返す。
- */
-function posixForm(raw: string): string {
-  if (!isWinAbs(raw)) return raw;
-  // `\\?\C:\a` は `C:\a`、`\\?\UNC\srv\share` は `\\srv\share` と同じものを指す
-  const path = raw.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, "\\\\").replace(/^[\\/]{2}\?[\\/]/, "");
-  const s = path.replace(/\\/g, "/");
-  return s.startsWith("//") ? `/UNC/${s.replace(/^\/+/, "")}` : `/${s}`;
-}
-
-/**
- * Windows で、別の名前が同じものを指す形（比べる規則をすり抜ける）を含むか。
- * - 要素の末尾の `.`・空白（Win32 は取り除く。`secret.` は `secret` と同じ）
- * - `:`（ドライブ文字の後のほか。代替データストリーム `file:stream`）
- * - `~<数字>`（8.3 形式の短い名前。`SECRET~1`）
- * - `\\?\`・`\\.\`（正規化を通らない形・デバイス）
- * - `C:foo`（ドライブ相対。そのドライブの今の場所が基準で、作業ツリーとは関係がない。`:` として拒む）
- * - `\foo`・`/foo`（区切り 1 つで始まる。今のドライブの根が基準で、どのドライブかが決まらない）
- */
-function hasWinAlias(path: string): boolean {
-  if (/^[\\/]{2}[?.][\\/]/.test(path)) return true;
-  if (/^[\\/](?![\\/])/.test(path)) return true;
-  // ドライブ文字を外すのは、後ろに区切りが続くとき（絶対パス）だけ
-  const rest = path.replace(/^[A-Za-z]:(?=[\\/])/, "");
-  if (rest.includes(":")) return true;
-  return rest
-    .split(/[\\/]/)
-    .some((seg) => seg !== "." && seg !== ".." && (/[. ]$/.test(seg) || /~\d/.test(seg)));
-}
-
 /**
  * `cwd` を基準に絶対化し、`.` と `..` を畳む（POSIX 区切り）。
- * `cwd` か `path` が Windows の絶対パスのときは、POSIX の形に読み替えてから畳む（`cwd` が Windows の形なら、
- * 相対パスの `\` も区切りとして扱う）。Windows の形のときは、`..` で根（`C:`・`UNC/srv/share`）より上には行かない
- * （Windows は根で止まる。越えて畳むと、別のドライブや別の共有を指す形に化ける）。
+ * `cwd` か `path` が Windows の絶対パスのときは、Windows の形として扱う（POSIX の形に読み替えてから畳み、
+ * 相対パスの `\` も区切りとして扱い、`..` で根より上には行かない）。規則は path.ts を参照。
  */
-function normalize(cwd: string, path: string): string {
-  const parts: string[] = [];
-  const win = isWinAbs(cwd) || isWinAbs(path);
-  const base = posixForm(cwd);
-  const p = isWinAbs(path) ? posixForm(path) : isWinAbs(cwd) ? path.replace(/\\/g, "/") : path;
-  const full = p.startsWith("/") ? p : `${base}/${p}`;
-  const rootLen = (): number => {
-    if (!win) return 0;
-    if (/^[A-Za-z]:$/.test(parts[0] ?? "")) return 1;
-    return parts[0] === "UNC" ? 3 : 0;
-  };
-  for (const seg of full.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (parts.length > rootLen()) parts.pop();
-    } else parts.push(seg);
-  }
-  return `/${parts.join("/")}`;
-}
+const normalize = (cwd: string, path: string): string =>
+  resolvePosixForm(cwd, path, isWinAbs(cwd) || isWinAbs(path) ? "win" : "posix");
 
 /**
  * 絶対パスの `.`・`..`・重なった区切りを畳み、元の OS の形で返す（ファイルを開くのに使える。Windows は `C:\a\b`・`\\srv\share\a`）。
@@ -138,20 +94,7 @@ export function normalizeAbsolutePath(path: string): string | undefined {
   return /^\/[A-Za-z]:$/.test(n) ? undefined : n.slice(1).replace(/\//g, "\\");
 }
 
-/** 場所の比較用。大文字小文字と Unicode の正規形の違いを畳み込む。表示・記録には使わない。 */
-const fold = (path: string): string => path.normalize("NFC").toLowerCase().normalize("NFC");
-
-const isUnder = (path: string, dir: string): boolean => {
-  // 末尾の区切りは外して比べる（`C:\` は `/C:`、`/` は空になる。空は、すべてを含む根）
-  const p = fold(posixForm(path)).replace(/\/+$/, "");
-  const d = fold(posixForm(dir)).replace(/\/+$/, "");
-  return d === "" || p === d || p.startsWith(`${d}/`);
-};
-
-const hasNul = (s: string): boolean => s.includes("\0");
-
-/** 書式制御文字（Cf）。ゼロ幅文字など、一部のファイルシステム（HFS+）が無視するため名前の比較を迂回できる。 */
-const hasFormatChar = (s: string): boolean => /\p{Cf}/u.test(s);
+const isUnder = isUnderForm;
 
 export interface ScopeIssue {
   readonly field: "cwd" | "writableLocations" | "forbiddenLocations" | "allowedCommands";
@@ -196,8 +139,8 @@ function checkWrite(scope: Scope, cwd: string, rawPath: string): ScopeDecision {
   if (rawPath.trim() === "" || hasNul(rawPath) || hasFormatChar(rawPath)) {
     return deny("invalidPath", rawPath);
   }
-  // Windows の作業ツリーでは、別の名前が同じものを指す形（末尾の `.`・短い名前・ストリームなど）を拒む
-  if ((isWinAbs(cwd) || isWinAbs(rawPath)) && hasWinAlias(rawPath)) {
+  // Windows の作業ツリーでは、別の名前が同じものを指す形（末尾の `.`・短い名前・ストリームなど）と予約デバイス名を拒む
+  if ((isWinAbs(cwd) || isWinAbs(rawPath)) && winPathProblem(rawPath) !== undefined) {
     return deny("invalidPath", rawPath);
   }
   const path = normalize(cwd, rawPath);

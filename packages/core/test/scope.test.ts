@@ -591,6 +591,24 @@ describe("Windows の形のパス（POSIX の形に読み替えて比べる）",
     // . と .. の要素は、畳むだけ
     expect(write("src\\.\\a.ts")).toEqual({ allowed: true });
   });
+  it("予約デバイス名（NUL・CON・COM1 など。拡張子付きも）への書き込みは拒む。似ているだけの名前は通す", () => {
+    for (const p of ["src\\NUL", "src\\nul.txt", "src\\con", "src\\COM1.log", "src\\aux\\a.ts"]) {
+      expect(write(p), p).toMatchObject({ allowed: false, reason: "invalidPath" });
+    }
+    expect(write("src\\null.ts")).toEqual({ allowed: true });
+    expect(write("src\\console.ts")).toEqual({ allowed: true });
+    // POSIX の作業ツリーでは、ただの名前
+    expect(
+      evaluateScope(
+        { writableLocations: ["src"], forbiddenLocations: [], allowedCommands: [] },
+        "/repo",
+        {
+          kind: "write",
+          path: "src/NUL",
+        },
+      ),
+    ).toEqual({ allowed: true });
+  });
   it("ドライブ相対（C:foo）と、区切り 1 つで始まるパスは拒む（作業ツリーが基準にならない）", () => {
     const all: Scope = {
       writableLocations: ["."],
