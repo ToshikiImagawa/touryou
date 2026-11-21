@@ -2,6 +2,8 @@
 
 ## 未公開
 
+## 0.1.6（2026-11-22）
+
 ### 利用者に見える変更
 
 - **root ごとに daemon を分ける運用で、常駐・版上げ・状態画面が、設定ごとの複数の daemon を扱えるようにした**（#165。#161 の案 B の残り）: 次の 4 点。(1) 設定ごとに別の daemon を常駐できる（`touryou launchd init|apply|status|restart|stop|uninstall` に `--config <絶対パス>`、分けた daemon すべてを対象にする `--others`）。(2) 状態画面は `touryou ui --list` で一覧を出し、`touryou ui --config <設定>` で選べる（複数あるときの既定は、実行した場所が `repoRoot`・`worktreeRoot` の中にあるもの。開いた設定のパスを出力に出す）。(3) 版上げ（`/setup` の `--restart-daemon`）は、ほかのリポジトリ用に分けた daemon も止めて起動し直す。(4) **引数なしの使い方は変わらない**（単一の root の利用者は、何も変えなくてよい）。plugin の `/setup`・`/service`・`/ui`・`/start`・`/status` の文面は、複数の daemon から対象を選べる。運用手順と、できないことは `docs/launchd.md` の「複数の daemon を常駐させる」。
@@ -16,9 +18,9 @@
 - **状態画面のやり取りの図の箱を、ボタンとして読み上げるようにした**: 箱に「ボタン」の役割を付けた（これまでも Tab で移り、Enter・Space で押せた）。押すと、その子のカードへ移る。
 - **状態画面が、変わったことを読み上げるようにした**: スクリーンリーダーで、「あなたの答え待ちが増えた」「失敗した作業が増えた」「daemon との接続が切れた」の 3 つだけを知らせる。答え待ちと失敗は、数が増えたときに読む（減ったとき・同じときは読まない）。ほかの変化では読み上げない。日本語と英語の両方。
 - **スマホの幅で、小さいボタンを押しやすくした**: スマホの幅のとき、「写す」・設定の歯車・図の拡大縮小などのボタンの高さを 44px 以上にした。設定の窓の切り替えのボタン（`.seg button`）は、幅も 44px 以上にした。
-- **OS の「視差効果を減らす」（「動きを減らす」）のとき、図の上を動く玉を隠すようにした**: 線の流れは止まり、玉も出さない。線と箱の色・文字だけで状態が読める。設定の窓の「動きを止める」でも同じ。
+- **状態画面の関係図で、線の上を走る丸い玉を、彗星のようなグラデーションの光に変えた**（#169）: 線そのものにグラデーションをかけて走らせる（頭が最も明るく、尾が線の形に沿って薄れる。折れ線・曲線でも尾が線から外れない。出る線は、これまでの玉と同じ「送った」段の線だけ。線の破線・点線・実線は変えていない）。
+- **OS の「視差効果を減らす」（「動きを減らす」）のとき、図の上を動く彗星を隠すようにした**（#157）: 線の流れは止まり、彗星も出さない。線と箱の色・文字だけで状態が読める。設定の窓の「動きを止める」でも同じ。
 - **統合ノードの `whoami` に、daemon の場所と識別子を足した**（#164）: 統合セッションが、いまつながっている daemon がどれかを確かめられるようにするため、`GET /v1/whoami` と MCP の `whoami` の結果に、統合ノードにだけ `daemon: { rootCwd, repoRoot, daemonId }` が付く（`daemonId` は `docs/daemon-identity.md` の識別子）。子・人間には出さない。
-
 - **終わった作業のカードで、受け入れた子の回収できない理由と、取れる手を見られるようにした**（#160）: 「この子への操作」に「回収できるか確かめる…」を足した（読み取りだけ）。満たしていない条件・原因のプロセスと、dirty・プロセスが動いている・プロセスを調べられない（processesUnknown）・作業ツリーの情報を確かめられないときの取れる手を出す。日本語と英語の両方。
 
 ### 直したこと
@@ -32,20 +34,44 @@
 - **紐付けが外れた CLI の子が、親に知らせる道がなかった**（#186）: コードなしのつなぎ直し（#145）が通らなかったとき（session_id が記録と違う・紐付けのトークンが切れた・止められた）、daemon が、親の受信箱に「紐付けをやり直して」（既存の `rebind`。ノードごとに 1 回。`node.bindCode` の出し直しで解ける）を出す。出すのは、作業ツリーの確認（cwd の実パスがそのノードの作業ツリー）を通ったあとだけで、応答の文・失敗の数え方・トークンの出し方・範囲とフックの判定は変えていない（守りは弱くならない。新しい道具・子の自由文は足していない）。あわせて、拒否の文（フックの `denyUnknown`・紐付けの前の `noneMessage`）が、使える MCP の名前（`mcp__plugin_touryou_node__child_bind`。`PLUGIN_NAME` から組み立てる）を出し、行き止まりだった「画面を見ている人に頼む」をやめた。覆えない子（印がない・`CLAUDE_CODE_SESSION_ID` が渡らない・daemon に届かない）は、これまでどおり紐付けの見張り（`cliWatch.unboundMinutes`）が拾う。設計は `.sdd/task/186/design-draft.md`。
 - **子のプロセスが止まっているとき、状態画面の「止まっているかも」の `claude attach <ノード ID>` で子の画面が開けなかった**（#150）: 起動の報告に子のセッション番号（`sessionRef`）があるときは、画面の応答（`/v1/ui/state`）にだけその番号を載せ（`nodes[].sessionRef`。記録・イベント・ログには残さない）、名前の形と番号の形（`claude attach <番号>`）の両方のコマンドを出す。番号が分からないときは、「`claude agents` で番号を見て `claude attach <番号>` を打つ」と案内する。
 - **子の紐付けが、どの daemon のコードかを持たず、接続先違いが「plugin が無い」と誤診された**（#167）: 3 つを直した。(1) daemon が書く `touryou-bind-code` に、2 行目として書いた daemon の公開 ID（`daemon=<daemonId>`）を足した。子の mcp は、身元を確かめた接続先の daemon の ID と突き合わせ、食い違えばコードを送らずに `bind_daemon_mismatch`（別の daemon のコード）で失敗する。1 行目がコードのままなので、古い形（コードだけ）のファイルも今までどおり読め、そのときは突き合わせずに送る。(2) daemon の bind の失敗理由を、記録（`bindFailed` の `reason`: `malformed`・`unknownCode`・`expired`・`used`・`nodeRejected`・`cwdMismatch`・`sessionConflict`・`rebindRejected`）と子への戻りで区別する。子への戻りで区別するのは、期限切れ（`bindCodeExpired`）・使用済み（`bindCodeUsed`。どちらも、そのコードを持つノードの名前で呼んだときだけ）・作業ツリー違い（`bindWorktreeMismatch`。コードと無関係）で、いずれも 401。未知のコード・別のノードのコードは、これまでどおり区別しない（コードの当たりを探られないため。コードそのものは、記録にも応答にも出さない）。mcp の失敗は `bind_code_expired`・`bind_code_used`・`bind_worktree_mismatch`。(3) 「子が紐付けていない」の知らせを、原因の候補を 3 つ（接続先違い・plugin の欠落・コードの期限切れ）出す文にした（日本語・英語）。
-
 - **探すコマンド（ls・find など）が `commandNotAllowed` で拒否されたとき、どの判定で落ちたかが記録に残らなかった**（#179）: Bash の範囲の拒否の `scope.violation` に、任意の項目 `diagnosis` を足した。`cwdInside`（フックに渡った cwd が作業ツリーの中か。真偽だけ）、`stage`（探すコマンドの判定で落ちた段。`cwdOutside`・`protectedOverlap`・`unquotedExpansion`・`unparsable`・`separator`・`cdRejected`・`filterRejected`・`notSearchCommand`・`optionNotAllowed`・`pathOutside`・`noSearchCommand`）、`runtime`（`cli` | `desktop`）の 3 つで、パス・コマンドの語・秘密は持たない（禁じる場所の実パスは、記録にも拒否の文面にも出さない）。拒否・許可の判定と受信箱の文面は変えていない。`diagnosis` のない古い記録もそのまま読める。形の違う `diagnosis`（知らない段・余計な項目）の `scope.violation` は、記録の不正として弾く。禁じる場所の判定（`checkProtected`）が先に拒んだ操作には、この診断は付かない。
 - **英語の状態画面で、カードの「最近のやり取り」の完了報告の文だけが日本語のまま出た**（#149）: daemon が書く完了報告（`report.added`）にも、受信箱の知らせと同じ文の鍵と値（`msg`・`doneReport`）を載せ、画面が選んだ言語の文にする（英語は「Done report (N pieces of evidence)」）。日本語の画面の文はこれまでと同じで、`msg` のない古い記録・子や統合が書いた報告は、書かれたままの言葉（`text`）で出す。関係図の線の札は、もともと本文を使わず、種類の言葉だけを出す。
 - **plugin の MCP（`touryou-mcp --stdio`）が、環境変数 `TOURYOU_DAEMON_CONFIG` を読まなかった**（#162）: 設定の決め方を、`touryou` と同じ「`--config` の引数 → 環境変数 `TOURYOU_DAEMON_CONFIG`（空は無視）→ `$HOME/.touryou/config.json`」にした。設定が `$HOME/.touryou` の外（例 `~/.touryou-renga/config.json`）にあるときも、権限の検査の対象を設定ファイルの親ディレクトリにして、通るようにした。
-- **状態画面の関係図で、線の上を走る丸い玉を、彗星のようなグラデーションの光に変えた**: 線そのものにグラデーションをかけて走らせる（頭が最も明るく、尾が線の形に沿って薄れる。折れ線・曲線でも尾が線から外れない。出る線は、これまでの玉と同じ「送った」段の線だけ。線の破線・点線・実線は変えていない）。
-- **OS の「視差効果を減らす」（「動きを減らす」）のとき、図の上を動く彗星を隠すようにした**: 線の流れは止まり、彗星も出さない。線と箱の色・文字だけで状態が読める。設定の窓の「動きを止める」でも同じ。
-
-### 直したこと
-
 - **CLI の子で、承認した場所へ Bash で書き込む形（mkdir・touch・cp・git rm・git mv）に承認が効かなかった**（#135）: 承認した `command`（例 `mkdir`）に、うしろの安全な旗とパスを足した形で、すべてのパスが実パス（リンクをたどる。まだない道は、あるいちばん深い親をたどる。#113 と同じ）で書き込める場所（承認した場所を含む）の中にあるときだけ、hook が明示の許可（`permit: "extension"`）を返す。リンクで外へ出る・外のパスを含む・旗の並びが BSD の読み方と食い違う形には、許可を付けない（承認済みの形だけの組み合わせで、パスだけが外なら、理由つきで断る）。cp・git mv の宛先が既存のディレクトリのときは、その中の `名前` も調べる。git rm・git mv は、禁じる場所や .git を含む親のパスも断る。1 語の承認（`mkdir` など）は、親（根の範囲）の `allowedCommands` にその語があるときだけ承認できる。残る穴: 調べたあとの差し替え（TOCTOU）・ハードリンク・cp が作業ツリーの外から読むこと。glob・空白を含むパス・`cp -r`・`mv`・`ln` は、この版では対象外。（承認した形そのもの（引数つき）も、同じくパスを実パスで照らす。パスを書く区切りは 1 つだけで、`&&` などでつないだ形には、この許可を付けない。作業ツリーの `.git` など守る場所の中には、どのコマンドも書けない）
 - **紐付けが外れた子が、拒否されたあとに自分で原因を探して範囲違反になった**（#170）: フックの拒否文（「ツール … は、このノードでは使えない」・紐付けの前・外れたときの文）に、「自分で原因を探さず、別の手も試さない。touryou の道具が使えれば `report_progress` で親に知らせ、使えなければ人に紐付けのやり直しを頼んで待つ」を足した。`touryou:child` の手順にも同じ案内を書いた。
 - **受理・回収・archive した子の、古い「停止未完了」「失敗」の知らせが受信箱に残り続けた**: 受理（`node.review` の accept）・回収可能にしたとき・archive にしたときに、その子の未解決の stopIncomplete・failure を、system の `inbox.resolved` で解決済みにする（core の `staleInboxItems` が対象を選ぶ）。daemon の起動時の整合も、すでに残っている古い知らせを、追記だけで 1 回だけ解決済みにする（記録は書き換えず、2 回目は何も足さない）。running・waiting・stopping・停止未完了の子の知らせは、解決済みにしない。あわせて、受理後の子の停止の報告で、プロセスが調べられない・すでに回収済みのときは stopIncomplete を新しく作らず info にとどめる（プロセスが残っているときは、今までどおり stopIncomplete）。セッションの削除を親が拒まれた失敗（removeRefused）は、人が判断するので解決済みにしない。
 - **plugin が本体より古いとき、版の違いの知らせが「本体を上げて」と言い、`/touryou:setup` が古い版に入れ替えてしまった**（#154）: セッションの始まりの知らせが、本体と plugin のどちらが新しいかで文を変える。plugin が古いときは「先に plugin を新しくする」と案内する。`/touryou:setup` は、plugin が古いと、何も変えずに止まり、plugin を新しくする案内を出す（常駐していても同じ）。`--scope user` の付け忘れで plugin が古いままになる場合も、この案内で直せる。
 - **手順書の plugin の update に `--scope user` を足した**（#153）: clone の中で `claude plugin update touryou@touryou` だけを実行すると、その clone の中だけが新しくなり、自分のアカウント全体の plugin は古いままになる。手順書（`docs/setup-verification.md` の C・`README.md`・`docs/plugin.md`）・`/touryou:setup`・script の止める文・この CHANGELOG の update の例のすべてに `--scope user` を書いた。
+
+### 内部の変更
+
+- **版を 0.1.6 にそろえた**: `plugin/.claude-plugin/plugin.json`・`packages/{cli,core,daemon,mcp}/package.json`・ルートの `package.json`・`README.md`。`.claude-plugin/marketplace.json` と `.claude/settings.json` は、公開のあとに自動の PR が書き換える。
+- **開発の統括と、常駐の手伝いの skill を `.claude/skills` に足した**（#155）。
+- **受理・回収・archive した子の古い知らせを片付ける処理（#158）の試験を足した**（#166）。
+- **今回の Issue 対応で子に渡した指示と調査メモを `.sdd/task` に残した**（#180）。
+
+### 知られている点
+
+- **レビューで見つかった残りの Issue は、0.1.6 に入っていない**: #197・#198・#201・#202。内容と避け方は、それぞれの Issue を見る。
+- **attach のあとも session_id が同じかは、実機で未確認**（#145）: 違えばコードなしの紐付け直しは通らず、親の受信箱に「紐付けをやり直して」が出る（#186）。確かめる手順は `docs/manual-verification-checklist.md` の A4-3。
+- **daemon の再起動の直後に 401 になる経路は、コードを読んだ範囲では特定できていない**（#185）: 外れたときは `binding_lost` が出て、`child_bind` を引数なしで呼べば結び直せる。
+
+### 上げ方
+
+v0.1.5 を入れている Mac で、次のとおり（細部は `docs/setup-verification.md` の C と、`/touryou:setup` の手順〔`plugin/commands/setup.md`〕）。v0.1.4 以前から上げる人は、先に 0.1.5 の節の「上げ方」を読む（入る版は v0.1.6 になる）。
+
+1. plugin を上げる。
+
+   ```sh
+   claude plugin marketplace update touryou
+   claude plugin update touryou@touryou --scope user
+   ```
+
+2. 新しいセッションで `/touryou:setup` を実行する（本体が v0.1.6 に入れ替わる）。セッションの始まりに、本体と plugin の版の違いの知らせが出ることもあるが、出なくても実行する。
+3. 常駐（launchd）させているときは、`/touryou:setup` をもう一度実行する（版が変わり、常駐しているときの手順）。daemon の起動し直しの同意を聞かれるので、「はい」と答える（「いいえ」なら何も変えずに止まる）。設定ごとに分けた daemon があれば、ほかのリポジトリ用のものも起動し直される（#165）。
+4. 上げる前から開いている統合セッションは、古い版の `touryou-mcp` のまま動き続ける。`/mcp` で `plugin:touryou:node` を選んで Reconnect する（Reconnect がない画面なら、Claude Code を起動し直す）。そのあと `/touryou:start` で、接続を確かめる。上げる前から動いている CLI の子も、古い版のフックのまま動くので、作業の切れ目で起動し直す。
+5. 状態画面は、`/touryou:ui`（または Mac のターミナルで `touryou ui`）で開き直す。開いていた画面は、daemon の起動し直しで切れる。
+6. **古い版へ戻さない**: 採用（`node.adopted`）・判断の取り下げ（`decision.withdrawn`）・切れそうな知らせ（`kind: "tokenIdleSoon"`）を含むログは、0.1.6 より古い daemon では読み直せない。使ったあとは、daemon を古い版へ戻さない。
 
 ## 0.1.5（2026-11-19）
 
