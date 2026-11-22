@@ -32,6 +32,7 @@ import {
   fail,
   type LogPort,
 } from "./context.js";
+import { depthProblem } from "./depth-check.js";
 import { createExclusive } from "./inflight.js";
 
 type R<Op extends keyof OperationMap> = Result<OperationMap[Op]["result"], Failure>;
@@ -62,6 +63,8 @@ export interface AdoptHandlerDeps {
   readonly ports: AdoptPorts;
   /** 根の有効な範囲（spawn と同じ）。 */
   readonly rootScope?: Scope;
+  /** 木の深さの上限（spawn と同じ。設定 `maxTreeDepth`）。省略すると `DEFAULT_MAX_TREE_DEPTH`。 */
+  readonly maxTreeDepth?: number;
   /** 応答に出さない原因の記録先。 */
   readonly onFailure?: (nodeId: string, cause: string) => void;
 }
@@ -164,6 +167,16 @@ export function createAdoptHandlers(deps: AdoptHandlerDeps) {
               "親の状態を確認する",
             );
           }
+
+          // 木の深さの上限（spawn と同じ判定。作業ツリーに触れる前に検査する。#168 PR4）。
+          const depthIssue = depthProblem({
+            state,
+            nodeId,
+            parentId: p.parentId,
+            role: p.role,
+            maxTreeDepth: deps.maxTreeDepth,
+          });
+          if (depthIssue !== undefined) return { ok: false, error: depthIssue };
 
           // 権限が親を超えないこと（spawn と同じ判定。作業ツリーに触れる前に検査する）。
           const scopeProblem = childScopeProblem({

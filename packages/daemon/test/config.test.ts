@@ -471,6 +471,16 @@ describe("parseConfig（設定は厳密に検査し、不正なら起動を失�
     for (const v of ["sdk", 1, null]) bad({ childRuntime: v }, "childRuntime");
   });
 
+  it("allowDesktopChildren（Desktop の子の opt-in）は真偽値（任意。省略は無効）", () => {
+    const none = parseConfig(JSON.stringify(base));
+    expect(none.ok && none.value.allowDesktopChildren).toBeUndefined();
+    for (const v of [true, false]) {
+      const r = parseConfig(JSON.stringify({ ...base, allowDesktopChildren: v }));
+      expect(r.ok && r.value.allowDesktopChildren).toBe(v);
+    }
+    for (const v of ["true", 1, null]) bad({ allowDesktopChildren: v }, "allowDesktopChildren");
+  });
+
   it("maxTurns・maxBudgetUsd（子ごとの上限）は、正の数（任意）", () => {
     const ok1 = parseConfig(JSON.stringify({ ...base, maxTurns: 50, maxBudgetUsd: 2.5 }));
     expect(ok1.ok && [ok1.value.maxTurns, ok1.value.maxBudgetUsd]).toEqual([50, 2.5]);
@@ -478,6 +488,19 @@ describe("parseConfig（設定は厳密に検査し、不正なら起動を失�
     expect(none.ok && none.value.maxTurns).toBeUndefined();
     for (const v of [0, -1, 1.5, "9", null, 100001]) bad({ maxTurns: v }, "maxTurns");
     for (const v of [0, -1, "9", null, 10001, Number.NaN]) bad({ maxBudgetUsd: v }, "maxBudgetUsd");
+  });
+
+  it("maxTreeDepth（木の深さの上限）は、2〜10 の整数（任意。省略は既定の 3 で、値は持たない）", () => {
+    const ok1 = parseConfig(JSON.stringify({ ...base, maxTreeDepth: 4 }));
+    expect(ok1.ok && ok1.value.maxTreeDepth).toBe(4);
+    for (const v of [2, 10]) {
+      const r = parseConfig(JSON.stringify({ ...base, maxTreeDepth: v }));
+      expect(r.ok && r.value.maxTreeDepth).toBe(v);
+    }
+    const none = parseConfig(JSON.stringify(base));
+    expect(none.ok && none.value.maxTreeDepth).toBeUndefined();
+    for (const v of [0, 1, 11, -1, 2.5, "3", null, [], Number.NaN])
+      bad({ maxTreeDepth: v }, "maxTreeDepth");
   });
 
   it("startLimits（同時に起動する数の上限）は、1〜64 の整数（任意。省略は既定の 4）", () => {

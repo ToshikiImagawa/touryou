@@ -8,6 +8,7 @@ import {
   type DaemonOperation,
   failure,
   LIMITS,
+  mcpToolName,
   ok,
   type Result,
   ROLE_OPERATIONS,
@@ -35,7 +36,7 @@ type McpOperation = RoleOperation<McpRole>;
 /** 操作ごとの説明。`McpOperation` を網羅しないと型エラーになる。 */
 const DESCRIPTIONS: Readonly<Record<McpOperation, string>> = {
   "node.spawn":
-    "子を生成する。parentId は、自分の ID（起動の指示の先頭か、tree_list の self 列が「あなた」の行で分かる）か、子孫の ID を、短縮しないでそのまま渡す（作業ツリーのディレクトリ名は ID ではない）。引数: parentId・role・objective（目的）・acceptanceCriteria（受け入れ基準）・scope（writableLocations・forbiddenLocations は作業ツリー内の相対パス、allowedCommands）・dependsOn（省略可）。作業ツリーとブランチは指定しない（システムが親のブランチから決める）。結果は { nodeId, status: running か pending, waitingFor? }（依存先が未完了なら pending で、待っている先行ノードを waitingFor に示す）",
+    "子を生成する。parentId は、自分の ID（起動の指示の先頭か、tree_list の self 列が「あなた」の行で分かる）か、子孫の ID を、短縮しないでそのまま渡す（作業ツリーのディレクトリ名は ID ではない）。引数: parentId・role・objective（目的）・acceptanceCriteria（受け入れ基準）・scope（writableLocations・forbiddenLocations は作業ツリー内の相対パス、allowedCommands）・dependsOn（省略可）・runtime（cli か desktop。省略可。省略すると daemon の設定の既定。desktop は設定 allowDesktopChildren が true のときだけ。許可がなければ desktopChildNotAllowed で失敗する）。作業ツリーとブランチは指定しない（システムが親のブランチから決める）。結果は { nodeId, status: running か pending, waitingFor? }（依存先が未完了なら pending で、待っている先行ノードを waitingFor に示す）",
   "node.adopt":
     "すでにある作業ツリーと、そこで動いているセッションを、子として採用する（起動しない。CLI の木だけ）。引数: parentId（自分の ID か子孫の ID）・role・worktree（実在する作業ツリーの絶対パス）・branch（そのブランチ名。上流は親のブランチにしておく）・objective・acceptanceCriteria・scope（spawn と同じ。親の範囲に収まること）・sessionRef（省略可）。作業ツリーとブランチは削除しない（回収でも消えない）。検査に通らないときは、原因と次の操作を返す。結果は { nodeId, worktree, branch, dirty（未コミットの変更あり）, instruction, duplicate }。instruction を、そのセッションの人に伝える（セッションで /mcp の Reconnect → child_bind を引数なしで呼ぶ）。コードが切れたら node_bindCode で出し直す",
   "node.send":
@@ -111,15 +112,16 @@ export const whoamiDescription = (role: McpRole): string =>
   `${ROLE_GUIDE[role]}自分の nodeId と role を返す（${role === "integrator" ? "{ nodeId, role, daemon: { rootCwd, repoRoot, daemonId } }。daemon は統合だけに付く" : "{ nodeId, role }"}）。起動の指示の先頭に書かれた ID の確認に使える${role === "integrator" ? "（tree_list の self 列でも分かる）" : ""}。引数はない`;
 
 /** 操作名から MCP のツール名への変換（`.` を `_` にする）。ツール名を扱う箇所はすべてこれを使う。 */
-export const toolName = (op: DaemonOperation): string =>
+export const toolName = (op: DaemonOperation, role: "integrator" | "child" = "child"): string =>
   // 子の受信箱は、統合と同じ名前 inbox_fetch で出す（知らせの文・Stop のフックが inbox_fetch を指すため）。
-  op === "child.inbox" ? "inbox_fetch" : op.replaceAll(".", "_");
+  // 統合ロール（サブ統括）では inbox_fetch が統合の受信箱なので、子の受信箱は child_inbox で出す（core の mcpToolName）
+  mcpToolName(op, role);
 
 /** ロールに公開するツールの一覧。MCP のロールでなければ何も公開しない。 */
 export function toolsFor(role: McpRole): readonly ToolDefinition[] {
   if (!isMcpRole(role)) return [];
   return ROLE_OPERATIONS[role].map((op) => ({
-    name: toolName(op),
+    name: toolName(op, role),
     operation: op,
     description: DESCRIPTIONS[op],
   }));

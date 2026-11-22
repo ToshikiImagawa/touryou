@@ -34,7 +34,8 @@ ID は、短縮せずに、そのまま渡します（作業ツリーのディ�
 - `mcp__node__node_stop`: 子を止める。`graceful` は穏当、`immediate` は即時。`graceMs` は `graceful` のときだけ指定できる。
 - `mcp__node__node_hookUnbind`: 子のフック（plugin のファイルで設定するフック）が、`/clear`・`--resume` で session_id が変わって拒否され続けるときに、結び付けを外す。次に来たセッションに結び直す。子のトークンが漏れた疑いがあるときは使わず、人間に知らせる。
 - `mcp__node__node_confirmStopped`: daemon が直接止められない子（能力表の `stopDelegated`。Desktop の子）を、受信箱の停止の代行依頼に従って止めた後に、止めたと宣言する。停止未完了から停止済みに進む。`note` に根拠を書ける。
-- `mcp__node__node_bindCode`: Desktop の子（設定 `childRuntime` が `desktop` の木）を作ったあとに呼び、返った `instruction` を、そのまま Desktop のタスク生成に渡す（仮置き）。呼ぶたびに新しい一度きりの紐付けコードになり、前のコードは無効になる。`instruction` には紐付けコードが入るので、ほかへ書き写さない。何度か呼んだときは、最後に受け取った `instruction` だけを使う（前のものはコードが無効）。Desktop の中間の統合ノードは紐付けできない（仮置き）。
+- `mcp__node__node_spawn` の `runtime`（`cli` か `desktop`。省略可）: 省略すると設定 `childRuntime`（既定 `cli`）。`desktop` は設定 `allowDesktopChildren` が `true` のときだけ作れる（許可がなければ `desktopChildNotAllowed`）。有効にした木では、CLI の子と Desktop の子を混ぜられる。子ごとに、下の手順（CLI の子は `claude --bg`、Desktop の子は `node_bindCode`）が変わる。
+- `mcp__node__node_bindCode`: Desktop の子（`runtime` が `desktop` の子）を作ったあとに呼び、返った `instruction` を、そのまま Desktop のタスク生成に渡す（仮置き）。呼ぶたびに新しい一度きりの紐付けコードになり、前のコードは無効になる。`instruction` には紐付けコードが入るので、ほかへ書き写さない。何度か呼んだときは、最後に受け取った `instruction` だけを使う（前のものはコードが無効）。Desktop の中間の統合ノードは紐付けできない（仮置き）。
 - `mcp__node__parent_request`: 親への依頼（CLI の子の起動・停止・削除）の中身を読む。返った `command` を Bash でそのまま実行する（手順は下の「CLI の子（親への依頼）」）。
 - `mcp__node__parent_report`: 依頼を実行した結果（子のセッションの参照・失敗の理由・`claude agents --json` の状態）を報告する。
 - `mcp__node__node_split`: 脱線した部分を、新しい子へ移す。元の子は、`keep` で、本筋に戻す（`mainline`）か止める（`stop`）。
@@ -47,6 +48,16 @@ ID は、短縮せずに、そのまま渡します（作業ツリーのディ�
 - `mcp__node__scope_decide`: 子の範囲の拡張の要求（`extensionId`）を、承認（`approve`）・却下（`reject`）・切り出し（`split`）のどれかにする。必要な分だけを承認する。
 - `mcp__node__decision_present`: 人間の判断が要るときに、選択肢を添えて提示する。判断を待つ間、止める子は `pauseNodeIds` で指定できる。回答は受信箱に届く。
 
+サブ統括（自分に親がいる統合ノード。#168）だけが、自分の親へ報告するときに使う。親を持たない根は、呼ぶと拒否される。使い方は子と同じ（`/touryou:child` の手順）:
+
+- `mcp__node__report_progress`: 節目ごとに、進捗を自分の親へ短く報告する。回数に上限があるので、細かくなりすぎない。
+- `mcp__node__report_decision`: 自分では決められないことを、判断要求として自分の親へ出す（選択肢を添える）。人間へは、親を経由する。
+- `mcp__node__decision_withdraw`: 自分が出した、未回答の判断要求を取り下げる。回答済みの判断は取り下げられない。
+- `mcp__node__report_outOfScope`: 範囲の外にある課題に気づいたら、自分で直さずに、自分の親へ申告する。
+- `mcp__node__report_done`: 受け入れ基準をすべて確かめてから、自分の親へ完了を報告する。基準ごとに根拠を付ける。
+- `mcp__node__scope_extend`: 自分の範囲が足りないときに、範囲の拡張を自分の親へ要求する。自分の範囲が広がるまで、配下の子にはその分を渡せない。
+- `mcp__node__child_inbox`: 自分の親から来た指示・差し戻し・判断の回答を読む（自分の配下の受信箱は `inbox_fetch`）。
+
 統合と回収（作る → 受理 → 統合 → 回収）:
 
 - `mcp__node__node_integrate`: 受理した直接の子（`verified`）のブランチを、あなたのブランチへ **fast-forward だけで**統合する。統合済みなら何もしない（`alreadyIntegrated: true`）。`notFastForward`（あなたのブランチが先に進んでいる）・`targetDirty`（あなたの作業ツリーに未保存の変更がある）のときは何も変わらないので、自分で `git merge`・`git rebase` をせず、`decision_present` で人間に統合のしかたを判断してもらう。
@@ -56,7 +67,7 @@ ID は、短縮せずに、そのまま渡します（作業ツリーのディ�
 
 ## CLI の子（親への依頼）
 
-CLI の子（設定 `childRuntime` が `cli` の木）は、TouRyou が起動しません。起動・停止・削除は、あなた（親のセッション）が Bash で `claude` のコマンドを実行します。TouRyou は、依頼を受信箱に書き、「touryou の受信箱（inbox_fetch）を読んで…（番号）」という 1 行の知らせをあなたのセッションに届けます（知らせが来ないときも、`inbox_fetch` で確かめる）。
+CLI の子（`runtime` が `cli` の子）は、TouRyou が起動しません。起動・停止・削除は、あなた（親のセッション）が Bash で `claude` のコマンドを実行します。TouRyou は、依頼を受信箱に書き、「touryou の受信箱（inbox_fetch）を読んで…（番号）」という 1 行の知らせをあなたのセッションに届けます（知らせが来ないときも、`inbox_fetch` で確かめる）。
 
 流れ: 起動（`claude --bg`）→ 子が紐付け（`child_bind`）→ 知らせと受信箱でやりとり → 停止（子へ知らせ → 猶予 → `claude stop`）→ 削除（`claude rm`）。受理した子は、受理のときに停止（`claude stop`）→ 削除（`claude rm`）の依頼が来る。
 

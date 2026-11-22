@@ -75,7 +75,16 @@ export function createHandlersWithScheduler(
   reclaim?: ReclaimPorts,
   spawn?: Pick<
     SpawnHandlerDeps,
-    "ports" | "credentials" | "rootScope" | "onFailure" | "startLimits" | "runtime"
+    | "ports"
+    | "credentials"
+    | "rootScope"
+    | "maxTreeDepth"
+    | "onFailure"
+    | "startLimits"
+    | "runtime"
+    | "adapterForRuntime"
+    | "desktopAllowed"
+    | "nodeRuntime"
   > & {
     /** 渡すと、既存の作業ツリーの採用（node.adopt。#163）も有効になる。 */
     adopt?: AdoptPorts;
@@ -184,6 +193,7 @@ export function createHandlersWithScheduler(
                 ...deps,
                 ports: spawn.adopt,
                 ...(spawn.rootScope === undefined ? {} : { rootScope: spawn.rootScope }),
+                ...(spawn.maxTreeDepth === undefined ? {} : { maxTreeDepth: spawn.maxTreeDepth }),
                 ...onFailure,
               }).handlers),
           ...createPauseHandlers({
