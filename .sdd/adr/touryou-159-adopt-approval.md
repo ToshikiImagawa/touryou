@@ -1,9 +1,9 @@
 ---
-id: "adr-draft-159-adopt-approval"
-title: "あとからの紐付けの承認 決定ログ（案）"
+id: "adr-159-adopt-approval"
+title: "あとからの紐付けの承認 決定ログ"
 type: "adr"
-status: "draft"
-sdd-phase: "plan"
+status: "proposed"
+sdd-phase: "implement"
 created: "2026-11-22"
 updated: "2026-11-22"
 depends-on: ["design-159-v017"]
@@ -11,9 +11,11 @@ tags: ["adopt", "bind", "approval"]
 category: "developer-tooling"
 ---
 
-# あとからの紐付けの承認 決定ログ（案）
+# あとからの紐付けの承認 決定ログ
 
-親の承認のあと、[touryou.md](../../adr/touryou.md) の末尾に追記する（本書は案。承認の方針は、利用者の判断 2 で A に決まった）。
+親の承認のあと、[touryou.md](touryou.md) の末尾に追記する（承認の方針は、利用者の判断 2 で A に決まった）。
+
+**実装の状況**: 1 件目（採用した子の runtime の記録）は PR1 で実装済み。2 件目（Desktop の採用の承認）と 3 件目（承認待ちの置き場）は PR3 で、未実装。
 
 ## 2026-11-22 採用した子にも runtime を記録し、見張りと画面を属性で判定する
 

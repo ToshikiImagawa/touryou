@@ -13,7 +13,7 @@ category: "security"
 
 # 子の権限管理 決定ログ（自動承認の範囲）案
 
-> 案。利用者の回答が食い違っている（受信箱 3490: D、3515: C）。本書は D 前提で書き、C に変わる場合の差も書く。親の承認の前に、利用者へ最終の確認が要る。設計は [design.md](design.md) の § 3.5。
+> 案（`.sdd/task/194/adr-draft-auto-approve.md` から、#194 の PR2 で移した）。利用者の回答が食い違っていた（受信箱 3490: D、3515: C）が、この PR の依頼では「B+C の組み合わせ（案 D）」に決まっている。本書は D 前提で書き、C に変わる場合の差も書く。設計は [design.md](../task/194/design.md) の § 3.5。PR2 では、`autoApprove` の読み込みと検査だけを入れた（承認への接続は PR5）。
 
 ## 2026-11-22 人間の規則に一致した読み取り専用のものは daemon が決定的に承認し、それ以外は人の上限の内側で root が承認する
 
@@ -26,3 +26,9 @@ category: "security"
 - **Decision**: C（AI の root が人の上限の内側で承認）に確定した場合は、`autoApprove`（PR 5）を実装しない。上限の内側の承認は、root が行い、上限の外は人が決める。PR 1〜4（正本・config・MCP の依頼・`config.reload`）は変わらない。
 - **Rationale**: `autoApprove` は、PR 1〜4 から独立した追加であり、外しても他の設計に影響しない。
 - **Rejected alternatives**: D のまま進める — 利用者の意思が C なら、意図より広い自動化になる。
+
+## 2026-11-22 config の検査で autoApprove に書ける Bash を、読み取り専用の表の先頭の語に限る（PR2 の実装判断）
+
+- **Decision**: `autoApprove` の `Bash(...)` は、先頭の語の並びが、フックの読み取り専用の表（`READ_ONLY_COMMAND_HEADS`: `find`・`ls`・`grep`・`git grep`・`git ls-files`）にあるものだけを config の読み込みで受ける。`head`・`tail`・`wc`・`cat` は、表を広げる PR（設計書 § 3.4 の 1）が入るまで書けない。
+- **Rationale**: 設計書の例（`Bash(tail -n:*)`）と、表にないコマンドは書けないという規則が食い違っていた。規則を優先し、表が広がれば、同じ定数から自動的に書けるようになる。
+- **Rejected alternatives**: 例に合わせて `tail` などを先に通す — 表の旗の検査とパスの確かめがないまま、読み取りの範囲が広がる。

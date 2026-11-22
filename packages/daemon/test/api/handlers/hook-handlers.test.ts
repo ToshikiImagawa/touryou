@@ -119,7 +119,9 @@ describe("node.hookUnbind（フックの結び付けを外す）", () => {
 });
 
 describe("node.hookToken（手動の CLI セッション用の、フック専用のトークン）", () => {
-  const setup = (opts: { cli?: boolean; managed?: boolean } = {}) => {
+  const setup = (
+    opts: { cli?: boolean; managed?: boolean; isDesktop?: (nodeId: string) => boolean } = {},
+  ) => {
     const store = createMemoryStore().open();
     const opened = EventLog.open(store, { clock });
     if (!opened.ok) throw new Error(opened.error.code);
@@ -154,6 +156,7 @@ describe("node.hookToken（手動の CLI セッション用の、フック専用
       sessions,
       ...(opts.cli === false ? {} : { hookTokens: tokens }),
       managed: () => opts.managed !== false,
+      ...(opts.isDesktop === undefined ? {} : { isDesktop: opts.isDesktop }),
       baseUrl: () => "http://127.0.0.1:7777",
     });
     const call = (nodeId: string, role = "human", requestId = `q-${++n}`) =>
@@ -166,6 +169,16 @@ describe("node.hookToken（手動の CLI セッション用の、フック専用
       } as unknown as HandlerRequest<"node.hookToken">);
     return { store, log, sessions, tokens, call };
   };
+
+  it("runtime が混在する木: isDesktop が真のノードだけ拒否し、cli の子には発行できる", () => {
+    const r = setup({ isDesktop: (id) => id === "p" });
+    const desktop = r.call("p");
+    expect(desktop.ok).toBe(false);
+    if (desktop.ok) throw new Error("desktop の子に発行できてはいけない");
+    expect(desktop.error.code).toBe("desktopHookEnvNotAllowed");
+    const cli = r.call("a");
+    expect(cli.ok).toBe(true);
+  });
 
   it("人間だけが、動作中の CLI の子に発行できる。トークンはフック用の表で通り、記録にはトークンが入らない", () => {
     const r = setup();
@@ -181,11 +194,19 @@ describe("node.hookToken（手動の CLI セッション用の、フック専用
     expect(JSON.stringify(rows)).not.toContain(res.value.token);
   });
 
-  it("統合ノードのトークン・統合ノード・依存待ち・desktop・管理していないノードは、発行しない", () => {
+  it("サブ統括（親のいる統合ノード）には、子と同じに発行できる", () => {
+    const r = setup();
+    const res = r.call("m1");
+    if (!res.ok) throw new Error(res.error.code);
+    expect(res.value.nodeId).toBe("m1");
+    expect(r.tokens.authenticate(res.value.token)).toBe("m1");
+  });
+
+  it("統合ノードのトークン・根の統合ノード・依存待ち・desktop・管理していないノードは、発行しない", () => {
     const r = setup();
     const code = (x: ReturnType<typeof r.call>) => (x.ok ? null : x.error.code);
     expect(code(r.call("a", "integrator"))).toBe("forbidden");
-    expect(code(r.call("m1"))).toBe("integratorNotSupported");
+    expect(code(r.call("root"))).toBe("integratorNotSupported");
     expect(code(r.call("p"))).toBe("notActive");
     expect(code(r.call("zzz"))).toBe("notFound");
     expect(code(setup({ cli: false }).call("a"))).toBe("notCli");

@@ -13,7 +13,7 @@ category: "security"
 
 # 子の権限管理 決定ログ（人間の settings.json の扱い）案
 
-> 案。利用者の回答（判断 2/2、案 C）を反映済み。親の承認の後に、決定ログへ追記する。設計は [design.md](design.md) の § 3.7。
+> 案（`.sdd/task/194/adr-draft-human-settings.md` から、#194 の PR2 で移した）。利用者の回答（判断 2/2、案 C）を反映済み。状態は、親の承認までは draft。設計は [design.md](../task/194/design.md) の § 3.7。
 
 ## 2026-11-22 人間の settings.json は deny だけを常時読み allow は読まない
 

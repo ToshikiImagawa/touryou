@@ -3,6 +3,7 @@
  *
  * - 未知のキーは拒否する。パスはすべて絶対パス（`..` を含まない・NUL を含まない・`/` だけでない）。
  * - 置き場（状態・作業ツリー・リポジトリ）は、互いに重ならないこと（状態の置き場に作業ツリーを作らない、など）。
+ *   ただし `stateDir` は、`repoRoot` の内側に置ける（gitignore 済みで追跡されていないことを、起動時に git で確かめる）。
  * - 根の範囲（`rootScope`）は、ブリーフを持たない根の子の、権限の上限になる。場所は、根の作業ツリー（`rootCwd`）からの
  *   相対パスで書き、`validateScope(rootScope, rootCwd)` を満たすこと。
  * - 外した設定（`LEGACY_KEYS`。SDK による子の起動・子の認証・子の HOME・子用の HTTP の MCP・中継）は、前の版から
@@ -32,6 +33,30 @@ import {
   IN_PROGRESS_BOUNDS,
   RATE_LIMIT_BOUNDS,
 } from "./api/rate-limit.js";
+import {
+  type AutoApproveConfig,
+  buildRootPolicy,
+  type PermissionsConfig,
+  parseAutoApproveConfig,
+  parsePermissionsConfig,
+  policyProblem,
+  type RootPolicy,
+} from "./root-policy.js";
+
+const EMPTY_PERMISSIONS: PermissionsConfig = { allow: [], deny: [], ask: [] };
+const EMPTY_AUTO_APPROVE: AutoApproveConfig = { allow: [] };
+
+/**
+ * 根の権限の方針（`rootScope`・`permissions`・`autoApprove` を畳んだもの）。呼ぶ側が「根は 1 つ」を前提にしないよう、
+ * 方針の取得はこの 1 つの関数に閉じ込める（設計書 § 4.1・確認点 Q3）。
+ */
+export function rootPolicyOf(config: DaemonConfig): RootPolicy {
+  return buildRootPolicy(
+    config.rootScope,
+    config.permissions ?? EMPTY_PERMISSIONS,
+    config.autoApprove ?? EMPTY_AUTO_APPROVE,
+  );
+}
 
 export interface DaemonConfig {
   /** 状態（SQLite・トークン）の置き場。0700 のディレクトリにする。 */
@@ -46,6 +71,17 @@ export interface DaemonConfig {
   readonly rootNodeId: string;
   /** 根の範囲（子の権限の上限）。場所は `rootCwd` からの相対パス。 */
   readonly rootScope: Scope;
+  /**
+   * 権限の規則（Claude Code の `permissions` の書き方の部分集合。`docs/config.md`）。`allow` は子に付与できる範囲の上限に足す規則、
+   * `deny` は常に拒否する規則、`ask` は承認を人間だけに限る規則。省略した一覧は空。解析できない規則は、起動を拒否する（#194 PR2）。
+   * いまは検査と正規化（`rootPolicyOf`）だけで、判定には接続していない。
+   */
+  readonly permissions?: PermissionsConfig;
+  /**
+   * 自動承認してよい規則（`allow` だけ）。読み取りだけのもの（読み取り専用のコマンド・名前を 1 つずつ書いた MCP ツール）に限り、
+   * `permissions.allow` の内側で、`deny`・`ask` に当たらないこと。いまは検査だけで、承認には接続していない（#194 PR2）。
+   */
+  readonly autoApprove?: AutoApproveConfig;
   /**
    * 再生成できるので、残っていても未保存の変更とみなさない gitignore の対象（パスの先頭のディレクトリ名）。省略すると
    * `node_modules`・`dist`・`.turbo`。これ以外の gitignore の対象（`.env` など）が作業ツリーにあれば、回収は拒否される。
@@ -230,6 +266,8 @@ const KEYS = [
   "rootCwd",
   "rootNodeId",
   "rootScope",
+  "permissions",
+  "autoApprove",
   "port",
   "regenerableIgnored",
   "discardedRefsMax",
@@ -301,7 +339,11 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
     (k) =>
       !(KEYS as readonly string[]).includes(k) && !(LEGACY_KEYS as readonly string[]).includes(k),
   );
-  if (unknown.length > 0) return bad(`未知のキー: ${unknown.join("、")}`);
+  if (unknown.length > 0) {
+    return bad(
+      `未知のキー: ${unknown.join("、")}（新しい版の項目なら、daemon の版を上げる。項目の一覧は docs/config.md）`,
+    );
+  }
 
   const paths: Record<"stateDir" | "repoRoot" | "worktreeRoot" | "rootCwd", string> = {
     stateDir: "",
@@ -315,12 +357,17 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
     paths[k] = p;
   }
   const { stateDir, repoRoot, worktreeRoot, rootCwd } = paths;
+  // 許す重なりは、`stateDir` が `repoRoot` の真に内側にある 1 つだけ（gitignore 済みかは、起動時に git で確かめる。
+  // `state-dir-ignore.ts`）。同じ場所・`stateDir` が `repoRoot` を囲む・`worktreeRoot` が絡む重なりは、拒否のまま。
+  const stateInsideRepo = stateDir !== repoRoot && isPathUnder(stateDir, repoRoot);
   if (
     overlaps(stateDir, worktreeRoot) ||
-    overlaps(stateDir, repoRoot) ||
+    (overlaps(stateDir, repoRoot) && !stateInsideRepo) ||
     overlaps(worktreeRoot, repoRoot)
   ) {
-    return bad("stateDir・repoRoot・worktreeRoot は、互いに重なってはならない");
+    return bad(
+      "stateDir・repoRoot・worktreeRoot は、互いに重なってはならない（ただし stateDir は、gitignore 済みなら repoRoot の内側に置ける）",
+    );
   }
   if (!isPathUnder(rootCwd, repoRoot))
     return bad("rootCwd は、repoRoot 自身かその配下でなければならない");
@@ -785,6 +832,26 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
     );
   }
 
+  // 権限の規則（#194 PR2）。形を確かめ、規則の中身（解析・子の許可の形・autoApprove の条件）を起動のときに検査する。
+  let permissions: PermissionsConfig | undefined;
+  if (raw.permissions !== undefined) {
+    const r = parsePermissionsConfig(raw.permissions);
+    if (!r.ok) return bad(r.cause);
+    permissions = r.value;
+  }
+  let autoApprove: AutoApproveConfig | undefined;
+  if (raw.autoApprove !== undefined) {
+    const r = parseAutoApproveConfig(raw.autoApprove);
+    if (!r.ok) return bad(r.cause);
+    autoApprove = r.value;
+  }
+  const policyIssue = policyProblem(
+    scope,
+    permissions ?? EMPTY_PERMISSIONS,
+    autoApprove ?? EMPTY_AUTO_APPROVE,
+  );
+  if (policyIssue !== undefined) return bad(policyIssue);
+
   return {
     ok: true,
     value: {
@@ -798,6 +865,8 @@ export function parseConfig(text: string): Result<DaemonConfig, Failure> {
         forbiddenLocations: [...scope.forbiddenLocations],
         allowedCommands: [...scope.allowedCommands],
       },
+      ...(permissions === undefined ? {} : { permissions }),
+      ...(autoApprove === undefined ? {} : { autoApprove }),
       port,
       ...(ignoredLegacyKeys.length === 0 ? {} : { ignoredLegacyKeys }),
       ...(regenerableIgnored === undefined ? {} : { regenerableIgnored }),

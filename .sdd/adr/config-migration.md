@@ -13,7 +13,7 @@ category: "compatibility"
 
 # 子の権限管理 決定ログ（config の移行と版の組み合わせ）案
 
-> 案。親の承認の後に、決定ログへ追記する。設計は [design.md](design.md) の § 4。
+> 案（`.sdd/task/194/adr-draft-config-migration.md` から、#194 の PR2 で移した）。状態は、親の承認までは draft。設計は [design.md](../task/194/design.md) の § 4。
 
 ## 2026-11-22 config は追加だけで拡張し rootScope を残して必須のままにする
 
@@ -23,6 +23,6 @@ category: "compatibility"
 
 ## 2026-11-22 新旧の版の組み合わせは旧の daemon が新しい項目を未知のキーとして拒否する
 
-- **Decision**: 旧の daemon（〜0.1.6）は、新しい config の `permissions`・`autoApprove` を、未知のキーとして起動を拒否する（今の挙動のまま。配布済みなので変えられない）。新の daemon は、旧の config をそのまま読む。新の daemon の「未知のキー」の文に、将来の項目の名前の表を持たせ、「この項目は新しい版の設定。daemon の版を上げる」と案内する。ダウングレードの手順（新しい項目を消してから、旧の daemon を起動する）と、新しい種類のイベント（`kind: mcp`・`revoked`・`policy.ruleChanged`）を書き始めた後は戻せないことを、`docs/` に書く。
+- **Decision**: 旧の daemon（〜0.1.6）は、新しい config の `permissions`・`autoApprove` を、未知のキーとして起動を拒否する（今の挙動のまま。配布済みなので変えられない）。新の daemon は、旧の config をそのまま読む。新の daemon の「未知のキー」の文に、「新しい版の項目なら daemon の版を上げる」と案内を足す（PR2 で入れた。項目ごとの名前の表は、案内が要る将来の項目ができるまで持たない）。ダウングレードの手順（新しい項目を消してから、旧の daemon を起動する）と、新しい種類のイベント（`kind: mcp`・`revoked`・`policy.ruleChanged`）を書き始めた後は戻せないことを、`docs/` に書く。
 - **Rationale**: 権限の設定が、黙って無視されるより、起動が止まるほうが安全（フェイルクローズ）。イベント列は、旧の daemon が未知の種類を読めないので、新しい機能を使い始めるまでは戻せる、という境界を明示するのが正直。任意の `touryou config migrate`（標準出力だけ）で、移行の手間を下げる。
 - **Rejected alternatives**: 旧の daemon に、新しい項目を無視させる — 不可能（配布済み）で、もし可能でも deny の取りこぼしが、黙って起きる。スナップショットの互換の層を、新の daemon が持ち、旧の形で書き続ける — 新機能の分岐が、イベントの書き込みの全体に広がる。

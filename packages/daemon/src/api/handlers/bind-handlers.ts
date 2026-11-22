@@ -10,6 +10,7 @@
 
 import {
   type Failure,
+  isDirectChild,
   isStrictDescendant,
   type OperationMap,
   type Result,
@@ -26,8 +27,13 @@ type R<Op extends keyof OperationMap> = Result<OperationMap[Op]["result"], Failu
 export interface BindHandlerDeps {
   readonly log: LogPort;
   readonly bind: Pick<BindCodes, "issueWithExpiry">;
-  /** Desktop の子のアダプタ（設定 `childRuntime` が desktop のときだけ）。 */
+  /** Desktop の子のアダプタ（Desktop の子を扱えるときだけ）。 */
   readonly desktop?: Pick<DesktopRuntimeAdapter, "instructionOf">;
+  /**
+   * そのノードの runtime（子ごと。#159）。CLI の子の文面と Desktop の子の文面を、ここで選ぶ。
+   * 省略すると、`desktop` があれば Desktop、なければ CLI（木に runtime が 1 つだけのとき）。
+   */
+  readonly runtimeOf?: (nodeId: string) => "cli" | "desktop";
   /** 窓口の URL（`http://127.0.0.1:<port>`。待ち受けの前は undefined）。 */
   readonly baseUrl: () => string | undefined;
   /** 設定 `touryouCommand`（Desktop の子が touryou を起動する語）。ないと `touryouCommandMissing`。 */
@@ -40,7 +46,7 @@ export interface BindHandlerDeps {
   /** 見張りの設定を置いた、子の作業ツリー（文面の「ローカルで始める」手順に書く）。 */
   readonly worktreeOf?: (nodeId: string) => string | undefined;
   /**
-   * CLI の子の木か（設定 `childRuntime` が cli）。真なら、Desktop の代わりに、CLI の子の紐付けの文面を返す
+   * CLI の子を扱えるか。真なら、CLI の子には、CLI の子の紐付けの文面を返す
    * （親が `claude --bg` の指示の頭に入れる。子の最初の番で、skill が mcp の `child_bind` にコードを渡す）。
    */
   readonly cli?: boolean;
@@ -189,15 +195,35 @@ export function createBindHandlers(deps: BindHandlerDeps) {
       }
       const s = stateOf(state, nodeId);
       if (s === undefined) return fail("notFound", "ノードが見つからない", "ID を確認する");
-      // 紐付けで渡すトークンは子のロールだけ（`POST /v1/bind`）。Desktop の中間の統合ノードは、まだ紐付けできない（仮置き）。
-      if (state.nodes.find((x) => x.id === nodeId)?.role === "integrator") {
-        return fail(
-          "integratorNotSupported",
-          `ノード ${nodeId} は統合ノードで、紐付けできない（紐付けで渡すのは子のトークンだけ。仮置き）`,
-          "中間の統合ノードを使わず、統合ノードの直下に作業の子を作る",
-        );
+      // 紐付けで渡すトークンは、ノードのロールに従う（`POST /v1/bind`）。サブ統括（統合ノードの子の統合ノード）は、CLI の木だけ。
+      const target = state.nodes.find((x) => x.id === nodeId);
+      if (target?.role === "integrator") {
+        // 根（親がない統合ノード）の資格は、人が用意する常駐のもの。コードで根のトークンを作る経路は作らない。
+        if (target.parentId === null) {
+          return fail(
+            "forbidden",
+            `ノード ${nodeId} は根の統合ノードで、bind コードでは紐付けない（人が用意した常駐のトークンを使う）`,
+            "根は /touryou:start で用意する",
+          );
+        }
+        // サブ統括の bind コードは、直接の親の統合ノードだけが発行する（人間は除く。設計 #168 判断 1）。
+        if (!human && !isDirectChild(state.nodes, caller, nodeId)) {
+          return fail(
+            "forbidden",
+            "サブ統括の bind コードは、直接の親の統合ノードだけが発行できる",
+            "直接の親（統合ノード）か人間に依頼する",
+          );
+        }
+        if (deps.cli !== true) {
+          return fail(
+            "integratorNotSupported",
+            `ノード ${nodeId} は統合ノードで、Desktop の木では紐付けできない（サブ統括は CLI の木だけ。仮置き）`,
+            "Desktop では中間の統合ノードを使わず、統合ノードの直下に作業の子を作る",
+          );
+        }
       }
-      if (deps.desktop === undefined && deps.cli === true) {
+      const runtime = deps.runtimeOf?.(nodeId) ?? (deps.desktop === undefined ? "cli" : "desktop");
+      if (runtime === "cli" && deps.cli === true) {
         if (!LIVE.has(s)) {
           return fail(
             "notActive",
@@ -232,7 +258,7 @@ export function createBindHandlers(deps: BindHandlerDeps) {
           value: { instruction: cliBindInstruction(nodeId, issued.code, expiresAt), expiresAt },
         };
       }
-      if (deps.desktop === undefined) {
+      if (runtime === "cli" || deps.desktop === undefined) {
         return fail(
           "notDesktop",
           "この木の子は Desktop の子ではない（設定 childRuntime が desktop のときだけ）",

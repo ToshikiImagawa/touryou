@@ -44,8 +44,8 @@ export interface HookHandlerDeps {
   readonly managed?: (nodeId: string) => boolean;
   /** 窓口の URL（待ち受けの前は undefined）。 */
   readonly baseUrl?: () => string | undefined;
-  /** Desktop の木か（`node.hookToken` は拒否する。子の引き出しの hook-token を無効にしてしまうため）。 */
-  readonly desktop?: boolean;
+  /** Desktop の子か（`node.hookToken` は拒否する。子の引き出しの hook-token を無効にしてしまうため）。省略すると、どのノードも違う。 */
+  readonly isDesktop?: (nodeId: string) => boolean;
 }
 
 const LIVE = new Set(["running", "waiting"]);
@@ -95,7 +95,7 @@ export function createHookHandlers(deps: HookHandlerDeps) {
           "人間のトークンで呼び出す",
         );
       }
-      if (deps.desktop === true) {
+      if (deps.isDesktop?.(nodeId) === true) {
         return fail(
           "desktopHookEnvNotAllowed",
           "Desktop の木では、touryou hook-env（フック専用のトークンの発行）は使えない（子の引き出しの見張りのトークンを無効にしてしまう）",
@@ -113,11 +113,12 @@ export function createHookHandlers(deps: HookHandlerDeps) {
       const state = log.state();
       const node = state.nodes.find((n) => n.id === nodeId);
       if (node === undefined) return fail("notFound", "ノードが見つからない", "ID を確認する");
-      if (node.role === "integrator") {
+      // 根（親がない統合ノード）は、範囲と作業ツリーを設定（rootScope・rootCwd）で持つので対象外。サブ統括は、子と同じに発行できる。
+      if (node.role === "integrator" && node.parentId === null) {
         return fail(
           "integratorNotSupported",
-          `ノード ${nodeId} は統合ノードで、フック専用のトークンは発行できない（子だけ）`,
-          "作業の子のノード ID を指定する",
+          `ノード ${nodeId} は根の統合ノードで、フック専用のトークンは発行できない（子とサブ統括だけ）`,
+          "作業の子かサブ統括のノード ID を指定する",
         );
       }
       const s = stateOf(state, nodeId);
