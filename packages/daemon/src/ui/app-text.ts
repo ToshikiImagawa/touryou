@@ -269,6 +269,10 @@ export const APP_TEXT = {
     ja: "まだ実行していません。ページのいちばん上の「確認待ち」の欄に、daemon を起動した端末に出たコードを打って、確認してください。",
     en: 'Not run yet. In the "Waiting for confirmation" box at the top of the page, type the code shown in the terminal where the daemon started, and confirm.',
   },
+  "fail.generic": {
+    ja: "処理を完了できませんでした",
+    en: "The request could not be completed",
+  },
   "fail.resendable": {
     ja: "同じ内容で、もう一度送れます（同じ要求として扱われ、二重には実行されません）。",
     en: "You can send the same thing again (it is treated as the same request and will not run twice).",
@@ -505,6 +509,7 @@ export const APP_TEXT = {
     en: "This can be undone. Use it only when you restarted the child's session and its hooks keep being refused. It binds to the next session that arrives.",
   },
   "page.title": { ja: "touryou 状態画面", en: "touryou status" },
+  "page.where": { ja: "この画面の daemon の作業場所", en: "Working directory of this daemon" },
   "priority.blocking": { ja: "要判断", en: "needs decision" },
   "priority.completed": { ja: "完了", en: "completed" },
   "priority.failed": { ja: "失敗", en: "failed" },
@@ -653,6 +658,14 @@ export const APP_TEXT = {
   "resolve.title": { ja: "項目を片付ける", en: "Mark items as done" },
   "runtime.cli": { ja: "CLI の子", en: "CLI child" },
   "runtime.desktop": { ja: "Desktop の子", en: "Desktop child" },
+  "runtime.openAdopted": {
+    ja: "開き方: 採用した子です。作業ツリー {path} の中で動くセッションを開きます。",
+    en: "How to open: this is an adopted child. Open the session running inside the worktree {path}.",
+  },
+  "runtime.openAdoptedRef": {
+    ja: "開き方: 採用した子です。端末でリポジトリのディレクトリに移り、claude attach {ref} を打つと、この子の画面を開けます。",
+    en: "How to open: this is an adopted child. In a terminal, go to the repository directory and run claude attach {ref} to open this child's screen.",
+  },
   "runtime.openCli": {
     ja: "開き方: 端末でリポジトリのディレクトリに移り、claude attach {id} を打つと、この子の画面を開けます。",
     en: "How to open: in a terminal, go to the repository directory and run claude attach {id} to open this child's screen.",
@@ -703,10 +716,6 @@ export const APP_TEXT = {
   "stall.paste": {
     ja: "端末に貼って、子の画面を開きます:",
     en: "Paste this in a terminal to open the child's screen:",
-  },
-  "stall.pasteByRef": {
-    ja: "上で開けないとき（子のプロセスが止まっているとき）は、番号の形で開きます:",
-    en: "If the above does not open it (the child's process has stopped), open it by session number:",
   },
   "stall.noRef": {
     ja: "上で開けないとき（子のプロセスが止まっているとき）は、claude agents で子の番号を見て、claude attach <番号> を打ってください。",

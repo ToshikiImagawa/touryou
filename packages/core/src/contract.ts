@@ -13,14 +13,25 @@ import type { NodeRole, NodeState } from "./index.js";
 import type { Blocker, UnmetReason } from "./reclaim.js";
 import type { Scope } from "./scope.js";
 
+/** 失敗の文の鍵と値（#141）。画面が、選んだ言語の文にする。値は、短い文字か数だけ。 */
+export interface FailureMessage {
+  readonly key: string;
+  readonly args: Readonly<Record<string, string | number>>;
+}
+
 /** 失敗。原因と次に取るべき操作を必ず持つ（NFR_010）。 */
 export interface Failure {
   /** 機械可読な分類。 */
   readonly code: string;
-  /** 原因（人が読める説明）。 */
+  /** 原因（人が読める説明。日本語。CLI・skill・MCP が読む）。 */
   readonly cause: string;
   /** 次に取るべき操作の候補。1 件以上。 */
   readonly nextActions: readonly [string, ...string[]];
+  /**
+   * 画面のための、原因の鍵と値（#141。受信箱の知らせの `msg` と同じ考え方）。daemon が窓口の応答にだけ付ける
+   * （記録には残さない）。`cause` は、この鍵の日本語の文と同じ。ないとき（古い daemon・未対応の失敗）は、画面が汎用の文を出す。
+   */
+  readonly msg?: FailureMessage;
 }
 
 /** 失敗を作る。次の操作が 1 件もない失敗は作れない（型と実行時の両方で拒否する）。 */
@@ -773,6 +784,21 @@ export const CHILD_MCP_TOOL_NAMES: readonly string[] = [
     op === "child.inbox" ? "inbox_fetch" : op.replaceAll(".", "_"),
   ),
 ];
+
+/**
+ * 統合のセッション（root・サブ統括）に出る touryou の mcp の道具の名前（接頭辞なし）。`whoami` と、ROLE_OPERATIONS.integrator の操作
+ * （mcp の toolName と同じ変換）。サブ統括の起動時の許可の一覧に使う。紐付けの道具 `child_bind` は含めない（統合は紐付け済みで起動するため）。
+ */
+export const INTEGRATOR_MCP_TOOL_NAMES: readonly string[] = [
+  "whoami",
+  ...ROLE_OPERATIONS.integrator.map((op) => op.replaceAll(".", "_")),
+];
+
+/** ロール別の、セッションに出る touryou の mcp の道具の名前（接頭辞なし）。`human` は mcp の道具を持たない。 */
+export const MCP_TOOL_NAMES_BY_ROLE = {
+  integrator: INTEGRATOR_MCP_TOOL_NAMES,
+  child: CHILD_MCP_TOOL_NAMES,
+} as const satisfies Partial<Record<ContractRole, readonly string[]>>;
 
 /**
  * 親（統合）のセッションで、確認なしにしてよい、読むだけの touryou の道具（接頭辞なし）。`/setup` の案内の Allow の例と、

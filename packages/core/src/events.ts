@@ -368,7 +368,11 @@ export type EventBody =
       readonly payload: { readonly decisionId: string; readonly answer: string };
     }
   | {
-      /** 判断を出した子が、要らなくなった判断を取り下げた（#196）。open の判断だけ。判断は `closed`（理由 `withdrawn`）になる。 */
+      /**
+       * 判断を出した子が、要らなくなった判断を取り下げた（#196）。open の判断だけ。判断は `closed`（理由 `withdrawn`）になる。
+       * 未知の型は再生で拒否する決まり（`unknownEventType`）なので、このイベントを記録した daemon の記録は、この型を知らない
+       * 古い版の daemon では再生できない（#202。docs/plugin.md の「取り下げ」の注意）。
+       */
       readonly type: "decision.withdrawn";
       readonly payload: { readonly decisionId: string };
     };
@@ -472,7 +476,7 @@ export interface NodeRecord {
   readonly objective?: string;
   readonly acceptanceCriteria?: readonly string[];
   readonly scope?: Scope;
-  /** 子の実行環境（`node.created` の `runtime`。記録だけで、振り分けには使わない）。根や以前の記録にはない。 */
+  /** 子の実行環境（`node.created` の `runtime`。見張り・画面は `runtimeOf` で判定する。compose の振り分けには、まだ使わない）。根や以前の記録にはない。 */
   readonly runtime?: NodeRuntime;
   /** 破棄の判断（停止したノードだけ。再開すると消える）。回収の再判定の入力 `facts.discarded` の情報源。 */
   readonly discarded?: {

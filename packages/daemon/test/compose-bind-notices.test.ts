@@ -271,6 +271,21 @@ describe("紐付けの期限の知らせの結線（#189）", () => {
     expect((await r.whoami(token)).status).toBe(200);
   });
 
+  it("切れなくなって知らせが解決になったあとは、受け取っていない古い前置きを子に見せない（#198）", async () => {
+    const r = await boot();
+    const { nodeId, token } = await r.spawnAndBind();
+    r.advance(52 * MIN);
+    r.daemon.sweepTokens();
+    expect(openOf(r.daemon, nodeId, "tokenIdleSoonBind")).toHaveLength(1);
+    // 前置きを読まないまま、作業の呼び出しで時計が延び、見回りで知らせが解決になる
+    expect((await r.asChild(token, "report.progress", { text: "進めている" })).json.ok).toBe(true);
+    r.daemon.sweepTokens();
+    expect(openOf(r.daemon, nodeId, "tokenIdleSoonBind")).toHaveLength(0);
+    const inbox = await r.asChild(token, "child.inbox", {});
+    expect(inbox.json.ok, JSON.stringify(inbox.json)).toBe(true);
+    expect(inbox.json.value.instructions).toHaveLength(0);
+  });
+
   it("ふつうの指示も一緒に読む child.inbox は、時計を延ばす（前置きだけのときだけが例外）", async () => {
     const r = await boot();
     const { nodeId, token } = await r.spawnAndBind();
@@ -297,6 +312,43 @@ describe("紐付けの期限の知らせの結線（#189）", () => {
     r.advance(9 * MIN);
     r.daemon.sweepTokens();
     expect(openOf(r.daemon, nodeId, "tokenExpiredIdleBind")).toHaveLength(0);
+    expect((await r.whoami(token)).status).toBe(200);
+  });
+
+  // #208: 報告のあとに道具を呼ばず待つ子（waiting・done）は、使わなければ切れる時計が止まるので、
+  // bindIdle を超えても、切れる前の知らせも切れた知らせも出ない（仕様どおり。docs/plugin.md）
+  it("判断待ち（waiting）の子は、bindIdle を超えても、切れる前・切れたの知らせが出ない", async () => {
+    const r = await boot();
+    const { nodeId, token } = await r.spawnAndBind();
+    const asked = await r.asChild(token, "report.decision", {
+      question: "どうする",
+      options: ["a", "b"],
+    });
+    expect(asked.json.ok, JSON.stringify(asked.json)).toBe(true);
+    expect(r.daemon.log.state().nodes.find((n) => n.id === nodeId)?.state).toBe("waiting");
+    for (const m of [52, 10, 10]) {
+      r.advance(m * MIN);
+      r.daemon.sweepTokens();
+    }
+    expect(noticesOf(r.daemon, nodeId, "tokenIdleSoonBind")).toHaveLength(0);
+    expect(noticesOf(r.daemon, nodeId, "tokenExpiredIdleBind")).toHaveLength(0);
+    expect((await r.whoami(token)).status).toBe(200);
+  });
+
+  it("報告のあと待つ子（done）は、bindIdle を超えても、切れる前・切れたの知らせが出ない", async () => {
+    const r = await boot();
+    const { nodeId, token } = await r.spawnAndBind();
+    const done = await r.asChild(token, "report.done", {
+      evidence: [{ criterion: "通る", evidence: "通った" }],
+    });
+    expect(done.json.ok, JSON.stringify(done.json)).toBe(true);
+    expect(r.daemon.log.state().nodes.find((n) => n.id === nodeId)?.state).toBe("done");
+    for (const m of [52, 10, 10]) {
+      r.advance(m * MIN);
+      r.daemon.sweepTokens();
+    }
+    expect(noticesOf(r.daemon, nodeId, "tokenIdleSoonBind")).toHaveLength(0);
+    expect(noticesOf(r.daemon, nodeId, "tokenExpiredIdleBind")).toHaveLength(0);
     expect((await r.whoami(token)).status).toBe(200);
   });
 

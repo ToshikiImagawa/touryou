@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { HUMAN_RESOLVABLE_KINDS } from "@touryou/core";
+import { failureMsg, HUMAN_RESOLVABLE_KINDS } from "@touryou/core";
 import { describe, expect, it } from "vitest";
 import {
+  FAILURES_JSON,
   INBOX_MESSAGES_JSON,
   LIST_SEPS_JSON,
   UI_CSS,
@@ -17,8 +18,8 @@ import { EXTERNAL_CHECK_SUMMARY, externalCheckSummaries } from "../../src/extern
 import { UI_TEXT as UI_TEXT_TABLE } from "../../src/ui/i18n.js";
 
 /** 埋め込んだ文字の表の行（#140）。JSON のオブジェクトの値だけの行（行の終わりまで形を決める）。走査から除くのは、この行だけ。 */
-const TABLE_LINE = /^ {2}var (?:TEXT|MESSAGES|SEPS) = \{[^\n]*\};$/gm;
-const TABLE_LINE_ONE = /^ {2}var (?:TEXT|MESSAGES|SEPS) = /;
+const TABLE_LINE = /^ {2}var (?:TEXT|MESSAGES|SEPS|FAILURES) = \{[^\n]*\};$/gm;
+const TABLE_LINE_ONE = /^ {2}var (?:TEXT|MESSAGES|SEPS|FAILURES) = /;
 
 /** 画面の資産の走査。XSS・トークンの漏れにつながる書き方を禁じる。 */
 describe("画面の資産（走査）", () => {
@@ -135,14 +136,15 @@ describe("画面の資産（走査）", () => {
     });
   });
 
-  it("走査から除く行は、埋め込んだ表の 3 行だけで、どれも JSON.stringify の値そのもの（#140）", () => {
+  it("走査から除く行は、埋め込んだ表の 4 行だけで、どれも JSON.stringify の値そのもの（#140・#141）", () => {
     const lines = UI_JS.split("\n").filter((l) => TABLE_LINE_ONE.test(l));
     expect(lines).toEqual([
       `  var TEXT = ${UI_TEXT_JSON};`,
       `  var MESSAGES = ${INBOX_MESSAGES_JSON};`,
       `  var SEPS = ${LIST_SEPS_JSON};`,
+      `  var FAILURES = ${FAILURES_JSON};`,
     ]);
-    expect(UI_JS.match(TABLE_LINE)).toHaveLength(3);
+    expect(UI_JS.match(TABLE_LINE)).toHaveLength(4);
   });
   it("許可リスト: `.` の後ろのプロパティ名は、安全な集合にあるものだけ（文字列・コメントを除く）", () => {
     const SAFE = new Set([
@@ -151,6 +153,8 @@ describe("画面の資産（走査）", () => {
       "tabIndex",
       // 止まった子を、セッション番号で開くコマンドを組むため（表示モデルの nodes[].sessionRef。#150）
       "sessionRef",
+      // 採用した子の開き方に、作業ツリーのパスを出すため（表示モデルの nodes[].adoptedWorktree。#159）
+      "adoptedWorktree",
       // 受信箱の項目を人が片付ける・戻す（#99）: inbox.resolve・inbox.reopen の結果の鍵
       "resolved",
       "alreadyResolved",
@@ -165,6 +169,11 @@ describe("画面の資産（走査）", () => {
       "t",
       "tAria",
       "tTitle",
+      // 失敗の帯の言語（#141）: 失敗の文の表（FAILURES.messages・none・sep）・画面が作った失敗の印（local）・値の分割
+      "messages",
+      "split",
+      "none",
+      "local",
       // 設定の窓（#139）。localStorage は、loadSettings・saveSettings の中だけ（上の「localStorage の使い所」の試験で確かめる）
       "still",
       "theme",
@@ -419,6 +428,8 @@ describe("画面の資産（走査）", () => {
       "setInterval",
       // 紐付けが外れているかもしれない子（表示モデルの値 true）
       "bindLost",
+      // どの daemon の画面かを、作業場所の名前で示す（#197）
+      "lastIndexOf",
     ]);
     // 埋め込んだ文字の表（#140。JSON の値で、コードでない）は、走査から除く
     const code = UI_JS.replace(TABLE_LINE, "")
@@ -490,6 +501,65 @@ ${fn("msgText")}\n${fn("flowText")}\nflowText`,
         "古い文",
       );
       expect(flowTextIn("en")({})).toBe("");
+    });
+  });
+
+  describe("失敗の帯の言語（#141）", () => {
+    const fn = (name: string): string => {
+      const at = UI_JS.indexOf(`function ${name}(`);
+      expect(at, name).toBeGreaterThan(0);
+      return UI_JS.slice(at, UI_JS.indexOf("\n  }\n", at) + 4);
+    };
+    // 画面の本物の failureText・failMsgText と、本物の表を、言語を決めて動かす
+    const failureTextIn = (lang: "ja" | "en") =>
+      runInNewContext(
+        `var TEXT = ${UI_TEXT_JSON}; var FAILURES = ${FAILURES_JSON};
+var PLACEHOLDER = /[{]([a-z][A-Za-z0-9]*)[}]/g; var lang = '${lang}';
+function t(key) { return TEXT[key][lang]; }
+${fn("failMsgText")}\n${fn("failureText")}\nfailureText`,
+      ) as (e: unknown) => string;
+    // 本物の daemon の失敗（応答の JSON と同じ形）
+    const wire = (f: unknown): { code: string; cause: string; msg?: unknown } =>
+      JSON.parse(JSON.stringify(f)) as { code: string; cause: string; msg?: unknown };
+    const wrongCode = wire(
+      failureMsg("confirmationInvalid", "confirmationWrongCode", { left: 3 }, "もう一度打つ"),
+    );
+    const tip = wire(
+      failureMsg(
+        "tipMismatch",
+        "tipMismatchDone",
+        { whenKey: "whenJustBeforeReclaim", idsList: "node-a,node-b", doneList: "" },
+        "確かめ直す",
+      ),
+    );
+
+    it("英語の画面は、msg から英語の文を作り、日本語の cause を出さない", () => {
+      expect(failureTextIn("en")(wrongCode)).toBe("Wrong code (3 attempts left)");
+      expect(failureTextIn("en")(tip)).toBe(
+        "Just before reclaiming, the branch tip differs from what was shown (what was checked at the decision), or was not shown, for node(s): node-a, node-b (already reclaimed: none)",
+      );
+      for (const f of [wrongCode, tip]) expect(failureTextIn("en")(f)).not.toMatch(/[぀-ヿ㐀-鿿]/);
+    });
+    it("日本語の画面は、daemon の cause のまま（これまでと同じ文）", () => {
+      expect(failureTextIn("ja")(wrongCode)).toBe("コードが違う（残り 3 回）");
+      expect(failureTextIn("ja")(tip)).toBe(
+        "回収の直前に、ブランチの先端が、表示した内容（判断のときに確かめた内容）と違う（または、表示になかった）ノード: node-a、node-b（回収済み: なし）",
+      );
+    });
+    it("msg のない失敗・知らない鍵は、英語では汎用の文（日本語の cause を出さない）。画面が作った失敗は、そのまま", () => {
+      const old = { code: "someOldFailure", cause: "古い daemon の文" };
+      expect(failureTextIn("en")(old)).toBe("The request could not be completed");
+      expect(failureTextIn("en")({ ...old, msg: { key: "noSuchKey", args: {} } })).toBe(
+        "The request could not be completed",
+      );
+      expect(failureTextIn("en")({ code: "network", cause: "Cannot connect", local: true })).toBe(
+        "Cannot connect",
+      );
+      expect(failureTextIn("ja")(old)).toBe("古い daemon の文");
+    });
+    it("画面の表示の 5 か所は、cause を直接出さず、failureText を通す", () => {
+      expect(UI_JS).not.toMatch(/cause: r\.error\.cause/);
+      expect(UI_JS).toContain("e.code + ': ' + failureText(e)");
     });
   });
 
@@ -581,6 +651,9 @@ ${fn("msgText")}\n${fn("flowText")}\nflowText`,
         fn("hasForbidden"),
         fn("checkAnswer"),
         fn("waitSecondsOf"),
+        line("var FAILURES ="),
+        fn("failMsgText"),
+        fn("failureText"),
         fn("describeFailure"),
         fn("checkNote"),
         fn("confirmStoppedParams"),
@@ -1496,16 +1569,24 @@ describe("画面の使い勝手（#13）", () => {
     );
   });
 
-  it("(#150) 子のプロセスが止まっていても開けるよう、セッション番号があるときは、名前の形と番号の形の両方を出す", () => {
+  it("(#197) ヘッダーに、どの daemon の画面か（作業場所の名前。全体は title）を示す。文は i18n の鍵", () => {
+    expect(UI_HTML).toContain('<span id="daemon-where" class="status" hidden></span>');
+    expect(UI_JS).toContain("document.getElementById('daemon-where')");
+    expect(UI_JS).toContain("where.title = t('page.where') + ': ' + attachDir;");
+    expect(UI_TEXT_TABLE["page.where"]?.ja).toContain("daemon");
+  });
+
+  it("(#150・#205) セッション番号があるときは、動いていても止まっていても開ける番号の形だけを出す。番号がないときだけ名前の形を出す", () => {
     uiContext.attachDir = "/r";
     const child = { id: "n-a1", cli: true, sessionRef: "bg-1234" };
     expect(api.attachCommandByRef(child)).toBe("cd '/r' && claude attach bg-1234");
-    expect(api.attachCommands(child)).toEqual([
-      "cd '/r' && claude attach n-a1",
-      "cd '/r' && claude attach bg-1234",
-    ]);
+    // 番号が分かるときは、コマンドは 1 つ（番号の形）。名前の形は並べない
+    expect(api.attachCommands(child)).toEqual(["cd '/r' && claude attach bg-1234"]);
     // 番号がない・形が不正・CLI の子でないものには、番号の形を出さない（名前の形だけ）
     expect(api.attachCommands({ id: "n-a1", cli: true })).toEqual([
+      "cd '/r' && claude attach n-a1",
+    ]);
+    expect(api.attachCommands({ id: "n-a1", cli: true, sessionRef: "a b; rm -rf" })).toEqual([
       "cd '/r' && claude attach n-a1",
     ]);
     expect(api.attachCommandByRef({ id: "n-a1", cli: true, sessionRef: "a b; rm -rf" })).toBe("");
