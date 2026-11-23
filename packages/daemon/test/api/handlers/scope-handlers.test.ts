@@ -126,9 +126,85 @@ const rig = (
       role: "human",
       params,
     } as unknown as HandlerRequest<"scope.decide">)) as Loose;
-  return { log, extend, decide, decideAsHuman, calls, flags, ev, s: () => log.state() };
+  /**
+   * 要求を、ハンドラを通さずに記録する。`scope.extend` が早期に断る（#249）依頼でも、要求のあとに範囲や規則が
+   * 変わった場合を想定して、`scope.decide` の検査（守り）を確かめるのに使う。
+   */
+  const seed = (
+    nodeId: string,
+    target: { kind: "write" | "command" | "mcp"; value: string },
+  ): string => {
+    const extensionId = `seed-ext-${++n}`;
+    add({
+      type: "scope.extensionRequested",
+      payload: { extensionId, nodeId, target, reason: "r" },
+    });
+    return extensionId;
+  };
+  return { log, extend, decide, decideAsHuman, seed, calls, flags, ev, s: () => log.state() };
 };
 const GIT = { target: { kind: "command", value: "git status" }, reason: "状態を見たい" };
+
+describe("scope.extend の早期の拒否（#249）", () => {
+  const ROOT: Scope = {
+    writableLocations: ["src"],
+    forbiddenLocations: [".git"],
+    allowedCommands: ["bash scripts/fetch-actionlint", "pnpm test"],
+  };
+
+  it("親（統合ノード）の範囲に収まらない依頼は、何も記録せず、近い許可コマンドつきで断る", async () => {
+    const r = rig();
+    const seq = r.s().lastSeq;
+    const res = await r.extend({ target: { kind: "command", value: "status" }, reason: "x" });
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe("scopeNotSubset");
+    expect(res.error?.cause).toContain("近い許可コマンド: git status");
+    expect(r.s().extensions).toHaveLength(0);
+    expect(r.s().lastSeq).toBe(seq);
+  });
+
+  it("近い許可がなければ、近い許可コマンドの文は付けない", async () => {
+    const r = rig();
+    const res = await r.extend({ target: { kind: "command", value: "git push" }, reason: "x" });
+    expect(res.error?.code).toBe("scopeNotSubset");
+    expect(res.error?.cause).not.toContain("近い許可コマンド");
+  });
+
+  it("deny に当たる MCP ツールは、根が親でも、記録せずに断る", async () => {
+    const r = rig({ rootScope: ROOT, denyRules: ["mcp__srv__tool"] });
+    const res = await r.extend(
+      { target: { kind: "mcp", value: "mcp__srv__tool" }, reason: "x" },
+      "c",
+    );
+    expect(res.error?.code).toBe("scopeDenied");
+    expect(r.s().extensions).toHaveLength(0);
+  });
+
+  it("親が根で、上限にも足して承認できる依頼は、今までどおり記録して画面に出す。承認の失敗に近い許可コマンドが出る", async () => {
+    const r = rig({ rootScope: ROOT });
+    const res = await r.extend(
+      { target: { kind: "command", value: "scripts/fetch-actionlint" }, reason: "x" },
+      "c",
+    );
+    expect(res.ok).toBe(true);
+    const failed = await r.decideAsHuman({
+      extensionId: res.value.extensionId,
+      decision: "approve",
+    });
+    expect(failed.error?.code).toBe("scopeNotSubset");
+    expect(failed.error?.cause).toContain("近い許可コマンド: bash scripts/fetch-actionlint");
+  });
+
+  it("収まる依頼は、今までどおり記録される", async () => {
+    const r = rig({ rootScope: ROOT });
+    const res = await r.extend(
+      { target: { kind: "command", value: "pnpm test" }, reason: "x" },
+      "c",
+    );
+    expect(res.ok).toBe(true);
+    expect(r.s().extensions).toHaveLength(1);
+  });
+});
 
 describe("scope.extend（範囲の拡張要求）", () => {
   it("要求を記録し、親の受信箱に項目（violation）を出す。再送は重複させない", async () => {
@@ -217,10 +293,14 @@ describe("scope.extend（範囲の拡張要求）", () => {
     const r = rig();
     for (let i = 0; i < 10; i++) {
       expect(
-        (await r.extend({ target: { kind: "command", value: `cmd${i}` }, reason: "r" })).ok,
+        (await r.extend({ target: { kind: "command", value: `git status cmd${i}` }, reason: "r" }))
+          .ok,
       ).toBe(true);
     }
-    const res = await r.extend({ target: { kind: "command", value: "cmd10" }, reason: "r" });
+    const res = await r.extend({
+      target: { kind: "command", value: "git status cmd10" },
+      reason: "r",
+    });
     expect(res.error?.code).toBe("tooManyOpenExtensions");
   });
 
@@ -285,14 +365,15 @@ describe("scope.decide（拡張の判定。承認でアダプタの範囲を更�
     const id = await ask(r);
     expect((await r.decide({ extensionId: id, decision: "reject" })).ok).toBe(true);
     expect(r.s().extensions[0]?.status).toBe("rejected");
-    const id2 = await ask(r, { kind: "command", value: "ls" });
+    const id2 = await ask(r, { kind: "command", value: "git status -s" });
     expect((await r.decide({ extensionId: id2, decision: "split" })).ok).toBe(true);
     expect(r.calls.updated).toEqual([]);
   });
 
   it("親の範囲を超える拡張は、承認しない（何も記録しない）", async () => {
     const r = rig();
-    const id = await ask(r, { kind: "command", value: "rm" });
+    // 要求の時点で断られる依頼（#249）を、要求のあとに範囲が変わった場合として直接記録する
+    const id = r.seed("a", { kind: "command", value: "rm" });
     const seq = r.s().lastSeq;
     const res = await r.decide({ extensionId: id, decision: "approve" });
     expect(res.error?.code).toBe("scopeNotSubset");
@@ -362,7 +443,7 @@ describe("scope.decide（拡張の判定。承認でアダプタの範囲を更�
 
     it("deny の規則に当たる MCP ツールは、上限にあっても承認できない（deny が勝つ）", async () => {
       const r = rig({ rootScope: WITH_MCP, denyRules: ["mcp__chrome__navigate"] });
-      const id = (await ask(r, TOOL)).value.extensionId as string;
+      const id = r.seed("c", { kind: "mcp", value: TOOL }); // 要求の時点では断られる（#249）ので、直接記録する
       const res = await r.decide({ extensionId: id, decision: "approve" }, "root");
       expect(res.error?.code).toBe("scopeDenied");
       expect(r.calls.updated).toEqual([]);
@@ -396,7 +477,7 @@ describe("scope.decide（拡張の判定。承認でアダプタの範囲を更�
     expect(r.s().lastSeq).toBe(seq);
     expect(r.calls.updated).toHaveLength(2);
     // 却下済みへの承認は、成功にしない
-    const id2 = await ask(r, { kind: "command", value: "ls" });
+    const id2 = await ask(r, { kind: "command", value: "git status -s" });
     await r.decide({ extensionId: id2, decision: "reject" });
     expect((await r.decide({ extensionId: id2, decision: "approve" })).error?.code).toBe(
       "extensionAlreadyDecided",
@@ -421,7 +502,7 @@ describe("scope.decide（拡張の判定。承認でアダプタの範囲を更�
     expect(r.s().instructions.at(-1)?.nodeId).toBe("a");
     expect(r.s().instructions.at(-1)?.text).toContain("承認");
     expect(r.calls.sent.at(-1)?.[0]).toBe("a");
-    const id2 = await ask(r, { kind: "command", value: "ls" });
+    const id2 = await ask(r, { kind: "command", value: "git status -s" });
     await r.decide({ extensionId: id2, decision: "reject" });
     expect(r.s().instructions.at(-1)?.text).toContain("却下");
   });
