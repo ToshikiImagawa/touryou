@@ -58,6 +58,12 @@ export type WorktreeFacts = Omit<ReclaimNodeFacts, "discarded"> & {
    * ノード）だけ。それ以外のノードでは、事実がないもの（`factsMissing`）として扱う（Issue #137）。
    */
   readonly gone?: true;
+  /** `merged` の根拠。祖先判定か、統合済みの証拠（PR の head・人の宣言）か。 */
+  readonly mergedBy?: "ancestor" | "evidence";
+  /** 子のブランチ名（一括の回収の候補に出す。CLI が gh で PR を探す手がかり）。 */
+  readonly branch?: string;
+  /** 親のブランチ（上流）の名前（CLI が、PR の base ブランチと突き合わせる）。 */
+  readonly base?: string;
 };
 
 /**
@@ -73,7 +79,10 @@ export type WorktreeFacts = Omit<ReclaimNodeFacts, "discarded"> & {
  */
 export interface ReclaimPorts {
   /** ノードの作業ツリーの事実。調べられない・作業ツリーがなければ `undefined`（回収不可）。 */
-  factsFor(nodeId: string): Promise<WorktreeFacts | undefined>;
+  factsFor(
+    nodeId: string,
+    opts?: { mergeEvidenceTip?: string },
+  ): Promise<WorktreeFacts | undefined>;
   /** 作業ツリー配下のプロセスの調査。取得できなければ `null`（回収不可）。 */
   readonly probe: ProcessProbe;
   /** 作業ツリーを消す。失敗は `Failure` で返す（例外は、ハンドラが `Failure` に変える）。 */
@@ -83,6 +92,8 @@ export interface ReclaimPorts {
       expectedPath: string;
       force?: boolean;
       onTip?: (tip: string, ref?: string) => void;
+      /** 統合済みの証拠の先端。`force` とは別の経路（先端を保管して `-D`）。 */
+      mergeEvidenceTip?: string;
     },
   ): Promise<Result<undefined, Failure>>;
   /** 強制の回収で失われるもの。なければ、事前確認に `loss` を出さない。 */
@@ -189,9 +200,27 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
     return isCommitSha(f.headCommit) ? { kind: "tip", sha: f.headCommit } : { kind: "unknown" };
   };
 
-  const currentTip = async (nodeId: string): Promise<Tip> => {
+  /** 記録している統合済みの証拠の先端（なければ空のオプション）。 */
+  const evidenceOpts = (
+    nodeId: string,
+    assume?: ReadonlyMap<string, string>,
+  ): { mergeEvidenceTip?: string } => {
+    // `assume`: 一覧の表示だけで、記録したものとして扱う証拠（何も記録しない）。記録がある子は、記録を使う。
+    const tip =
+      log.state().nodes.find((n) => n.id === nodeId)?.mergeEvidence?.tip ?? assume?.get(nodeId);
+    return tip === undefined ? {} : { mergeEvidenceTip: tip };
+  };
+
+  /** いまの先端。`withEvidence: false` は、証拠の記録の前に、証拠を使わずに取る。 */
+  const currentTip = async (
+    nodeId: string,
+    withEvidence = true,
+    assume?: ReadonlyMap<string, string>,
+  ): Promise<Tip> => {
     try {
-      return tipOfFacts(await ports.factsFor(nodeId));
+      return tipOfFacts(
+        await ports.factsFor(nodeId, withEvidence ? evidenceOpts(nodeId, assume) : {}),
+      );
     } catch (e) {
       deps.onFailure?.(nodeId, String(e));
       return { kind: "unknown" };
@@ -263,8 +292,13 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
     open: readonly string[],
     nodeId: string,
     discarded: ReadonlySet<string>,
+    assume?: ReadonlyMap<string, string>,
   ): Promise<{ result: Result<ReclaimAssessment, Failure>; facts?: WorktreeFacts }> {
-    const raw = await safely(nodeId, () => ports.factsFor(nodeId), undefined);
+    const raw = await safely(
+      nodeId,
+      () => ports.factsFor(nodeId, evidenceOpts(nodeId, assume)),
+      undefined,
+    );
     // 消すものがない（gone）事実は、人が破棄を決めた停止ノード・受理済み（verified）ノードと、まだ判断のない停止ノード
     // （判断が要ると示すため）にだけ使う。破棄の判断がない verified は、これまでどおり事実がないもの（factsMissing）。
     const self = nodes.find((n) => n.id === nodeId);
@@ -614,12 +648,52 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
       }
     },
 
+    // 統合済みの証拠の記録（人間だけ。#239）。AI は証拠を作れない。証拠の先端が、いまのブランチの先端と違えば記録しない。
+    "node.mergeEvidence": async (
+      req: HandlerRequest<"node.mergeEvidence">,
+    ): Promise<R<"node.mergeEvidence">> => {
+      if (req.role !== "human") {
+        return fail(
+          "forbidden",
+          "統合済みの証拠の記録は、人間だけができる",
+          "人間に、touryou reclaim <nodeId> --merged-as <PR番号またはSHA> を実行してもらう",
+        );
+      }
+      const { nodeId, evidenceKind, tip, prNumber } = req.params;
+      const node = log.state().nodes.find((n) => n.id === nodeId);
+      if (node === undefined) return fail("notFound", "ノードが見つからない", "ID を確認する");
+      const current = await currentTip(nodeId, false);
+      if (current.kind === "unknown") return tipUnknown([nodeId], "whenBeforeRecordDecision");
+      if (current.kind !== "tip" || current.sha !== tip) {
+        return tipMismatch([nodeId], "whenBeforeRecordDecision");
+      }
+      const appended = appendAtomically(log, deps.clock, req.requestId, { human: true }, [
+        {
+          type: "node.mergeEvidenceRecorded",
+          payload: {
+            nodeId,
+            evidenceKind,
+            tip,
+            ...(prNumber === undefined ? {} : { prNumber }),
+          },
+        },
+      ]);
+      if (!appended.ok) {
+        if (appended.error.code === "alreadyRecorded") {
+          return { ok: true, value: { recorded: true, duplicate: true } };
+        }
+        return appended;
+      }
+      return { ok: true, value: { recorded: true, duplicate: appended.value.duplicate } };
+    },
+
     // 一括の回収の事前確認（人間だけ。#234）。何も変えない。
     "node.reclaimBatchPreview": async (
       req: HandlerRequest<"node.reclaimBatchPreview">,
     ): Promise<R<"node.reclaimBatchPreview">> => {
       if (req.role !== "human") return batchHumanOnly();
-      const { candidates, digest } = await batchCandidates();
+      const assume = new Map((req.params.assumeEvidence ?? []).map((e) => [e.nodeId, e.tip]));
+      const { candidates, digest } = await batchCandidates(assume);
       return { ok: true, value: { candidates, digest } };
     },
 
@@ -669,12 +743,15 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
    * 一括の回収の候補: 受理済み（verified）の子を、配下から先の順に判定する。回収できる子は、あとの判定（親の統合ノード）では回収可能とみなす。
    * 照合の値は、回収できる子の ID と先端（取れなければ、回収できないものとして対象外にする）を畳んだもの。
    */
-  async function batchCandidates(): Promise<{
+  async function batchCandidates(assume?: ReadonlyMap<string, string>): Promise<{
     candidates: {
       nodeId: string;
       eligible: boolean;
       unmet: readonly UnmetReason[];
       blockers: readonly Blocker[];
+      mergedBy?: "ancestor" | "evidence";
+      branch?: string;
+      base?: string;
     }[];
     digest: string;
   }> {
@@ -693,6 +770,9 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
       eligible: boolean;
       unmet: readonly UnmetReason[];
       blockers: readonly Blocker[];
+      mergedBy?: "ancestor" | "evidence";
+      branch?: string;
+      base?: string;
     }[] = [];
     const lines: string[] = [];
     for (const n of order) {
@@ -711,7 +791,14 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
         });
         continue;
       }
-      const { result: r } = await assessNode([...virtual.values()], open, n.id, discarded);
+      const { result: r, facts } = await assessNode(
+        [...virtual.values()],
+        open,
+        n.id,
+        discarded,
+        assume,
+      );
+      const mergedBy = facts?.mergedBy;
       if (!r.ok) {
         candidates.push({
           nodeId: n.id,
@@ -724,14 +811,27 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
       let { unmet } = r.value;
       let eligible = r.value.reclaimable;
       if (eligible) {
-        const tip = await currentTip(n.id);
+        const tip = await currentTip(n.id, true, assume);
         if (tip.kind === "unknown") {
           eligible = false;
           unmet = ["factsMissing"];
-        } else lines.push(`${n.id}:${tip.kind === "tip" ? tip.sha : "none"}`);
+        } else {
+          // 証拠による統合済みは、照合の値にも印を入れる（根拠が変われば、一覧の確認をやり直させる）。
+          lines.push(
+            `${n.id}:${tip.kind === "tip" ? tip.sha : "none"}${mergedBy === "evidence" ? ":evidence" : ""}`,
+          );
+        }
       }
       if (eligible) virtual.set(n.id, { ...n, state: "reclaimable" });
-      candidates.push({ nodeId: n.id, eligible, unmet, blockers: r.value.blockers });
+      candidates.push({
+        nodeId: n.id,
+        eligible,
+        unmet,
+        blockers: r.value.blockers,
+        ...(mergedBy === undefined ? {} : { mergedBy }),
+        ...(facts?.branch === undefined ? {} : { branch: facts.branch }),
+        ...(facts?.base === undefined ? {} : { base: facts.base }),
+      });
     }
     const digest = createHash("sha256")
       .update(lines.sort().join("\n"), "utf8")
@@ -871,9 +971,16 @@ export function createReclaimHandlers(deps: ReclaimHandlerDeps) {
           // 一括の回収（noForce）は、記録があっても強制しない（一覧・照合の値に出ない配下を、強制で消さないため）。
           const force =
             noForce !== true && forceCandidate(record) && record.discarded !== undefined;
+          // 統合済みの証拠で統合済みとなったノードは、`force` とは別の経路（先端を保管して `-D`）で消す。
+          // ポートが、実行の直前に先端を証拠と照合する。
+          const evidenceTip =
+            !force && again.facts.mergedBy === "evidence"
+              ? evidenceOpts(n.id).mergeEvidenceTip
+              : undefined;
           removed = await ports.removeWorktree(n.id, {
             expectedPath: again.facts.worktreePath,
             ...(force ? { force: true, onTip } : {}),
+            ...(evidenceTip === undefined ? {} : { mergeEvidenceTip: evidenceTip, onTip }),
           });
         } catch (e) {
           removed = { ok: false, error: failure("removeFailed", String(e), "原因を取り除く") };

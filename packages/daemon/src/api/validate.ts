@@ -16,12 +16,15 @@ import {
   isAgentState,
   isBoundedText,
   isCommitSha,
+  isPrNumber,
   isSafeId,
   isSessionId,
   isSessionRef,
   isValidInboxTime,
   LIMITS,
   MAX_GRACE_MS,
+  MAX_PR_NUMBER,
+  MERGE_EVIDENCE_KINDS,
   NODE_ROLES,
   NODE_RUNTIMES,
   type OperationMap,
@@ -359,12 +362,39 @@ const VALIDATORS: Validators = {
   "node.reclaimPreview": nodeIdOnly,
   "node.reclaim": nodeIdOnly,
   "node.reclaimBatchPreview": (p) => {
-    strict(p, []);
-    return {};
+    const o = strict(p, ["assumeEvidence"]);
+    const v = o.assumeEvidence;
+    if (v === undefined) return {};
+    if (!Array.isArray(v) || v.length > LIMITS.expectNodeIds) {
+      fail(`assumeEvidence は、{nodeId, tip} の配列（${LIMITS.expectNodeIds} 件以下）`);
+    }
+    const list = (v as unknown[]).map((e) => {
+      const r = strict(e, ["nodeId", "tip"]);
+      if (!isCommitSha(r.tip)) fail("tip が不正（40 桁の 16 進のコミット SHA）");
+      return { nodeId: id(r, "nodeId"), tip: r.tip as string };
+    });
+    if (new Set(list.map((e) => e.nodeId)).size !== list.length)
+      fail("assumeEvidence に重複がある");
+    return { assumeEvidence: list };
   },
   "node.reclaimBatch": (p) => {
     const o = strict(p, ["expectDigest"]);
     return { expectDigest: id(o, "expectDigest") };
+  },
+  "node.mergeEvidence": (p) => {
+    const o = strict(p, ["nodeId", "evidenceKind", "tip", "prNumber"]);
+    const tip = o.tip;
+    if (!isCommitSha(tip)) fail("tip が不正（40 桁の 16 進のコミット SHA）");
+    const out: OperationMap["node.mergeEvidence"]["params"] = {
+      nodeId: id(o, "nodeId"),
+      evidenceKind: oneOf(o, "evidenceKind", MERGE_EVIDENCE_KINDS),
+      tip: tip as string,
+    };
+    if (o.prNumber !== undefined) {
+      if (!isPrNumber(o.prNumber)) fail(`prNumber が不正（1〜${MAX_PR_NUMBER} の整数）`);
+      return { ...out, prNumber: o.prNumber as number };
+    }
+    return out;
   },
   "node.integrate": nodeIdOnly,
   "node.capabilities": nodeIdOnly,

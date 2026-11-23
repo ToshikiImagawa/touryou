@@ -7,7 +7,13 @@
  */
 
 import type { Brief } from "./brief.js";
-import type { ExtensionTarget, NodeRuntime, ReportEvidence, ReportKind } from "./events.js";
+import type {
+  ExtensionTarget,
+  MergeEvidenceKind,
+  NodeRuntime,
+  ReportEvidence,
+  ReportKind,
+} from "./events.js";
 import type { InboxItem } from "./inbox.js";
 import type { NodeRole, NodeState } from "./index.js";
 import type { Blocker, UnmetReason } from "./reclaim.js";
@@ -350,19 +356,42 @@ export interface OperationMap {
   };
   "node.reclaim": { params: { nodeId: string }; result: { reclaimed: readonly string[] } };
   /**
+   * 統合済みの証拠の記録・宣言（人間だけ。#239。AI は証拠を作れない）。スカッシュ・リベースでマージした子は、祖先判定では統合済みと
+   * 分からないので、人間が、その子のブランチの先端（`tip`）が統合済みだと記録する。`evidenceKind`: `prHead`（マージ済みの PR の head の SHA。
+   * 人間の CLI が `gh` で取る）、`human`（人の宣言）。`prNumber`: PR の番号（任意）。
+   * daemon は、`tip` が、いまの子のブランチの先端と一致するときだけ記録する（違えば何も記録せず `tipMismatch`）。記録は先端に紐付き、
+   * 先端が動いたら無効。状態は変えない。同じ内容の記録が済みなら `duplicate: true`（何も変えない）。
+   */
+  "node.mergeEvidence": {
+    params: { nodeId: string; evidenceKind: MergeEvidenceKind; tip: string; prNumber?: number };
+    result: { recorded: true; duplicate: boolean };
+  };
+  /**
    * 統合済みの子の一括の回収の事前確認（人間だけ。#234）。受理済み（verified）で、親のブランチに統合済み（祖先判定）の子を、
    * 回収できるもの（`eligible`）と、できないもの（理由つき。未コミット・未統合・動作中のプロセスなど）に分けて返す。何も変えない。
    * `digest`: 回収できるものの ID と、ブランチの先端を畳んだ照合の値。`node.reclaimBatch` の `expectDigest` に、そのまま渡す。
    * スカッシュ・リベースでマージした子は、祖先判定では統合済みと分からないので、`notMerged` で対象外に出る（個別の `touryou reclaim` で扱う）。
    */
   "node.reclaimBatchPreview": {
-    params: Record<string, never>;
+    params: {
+      /**
+       * 「この先端の証拠を、記録したものとして」一覧を出す（何も記録しない。CLI が、gh で一致を確かめた結果を、
+       * `--yes` の前の表示と、実行の直前で、同じ照合の値にするため）。先端が、いまの先端と違えば、その子には使わない。
+       */
+      assumeEvidence?: readonly { nodeId: string; tip: string }[];
+    };
     result: {
       candidates: readonly {
         nodeId: string;
         eligible: boolean;
         unmet: readonly UnmetReason[];
         blockers: readonly Blocker[];
+        /** 統合済みの根拠（統合済みと判定できたものだけ）。`ancestor`: 祖先判定。`evidence`: 統合済みの証拠（`node.mergeEvidence`）。 */
+        mergedBy?: "ancestor" | "evidence";
+        /** 子のブランチ名（CLI が、gh でマージ済みの PR を探す手がかり。信頼できる値だが、端末に出す前に整える）。取れなければ省略。 */
+        branch?: string;
+        /** 親のブランチ（上流）の名前。CLI は、PR の base がこれと同じものだけを証拠にする。取れなければ省略（証拠を探さない）。 */
+        base?: string;
       }[];
       digest: string;
     };
@@ -739,6 +768,8 @@ export const ROLE_OPERATIONS = {
     "config.reload",
     "policy.ruleChange",
     "node.reclaimInstruct",
+    // 統合済みの証拠の記録・宣言は、人間だけ（AI は証拠を作れない。integrator・child・root・Desktop の子には足さない）
+    "node.mergeEvidence",
     "node.reclaimPreview",
     "node.reclaimBatchPreview",
     "node.reclaimBatch",
