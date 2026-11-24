@@ -24,7 +24,8 @@ export const APP_TEXT = {
   "pane.switch": { ja: "表示の切り替え", en: "Switch view" },
   "pane.navExplore": { ja: "やり取りと作業", en: "Exchanges and work" },
   // 下のタブの件数の札の読み上げ（札そのものは読み上げない）
-  "pane.navCount": { ja: "、答え待ち {n} 件", en: ", {n} waiting for your answer" },
+  // 件数は「あなたの番」の窓の数（#now-count）と同じ。窓の見出し（now.titleN）の「すること {n} 件」と言い方をそろえる
+  "pane.navCount": { ja: "、すること {n} 件", en: ", {n} to do" },
   "admin.warn": {
     ja: "ここの操作の多くは、あとから戻せません。押すと、内容を確かめる欄が出ます。取り消せない操作は、対象の ID を打ち込まないと送れません。",
     en: "Most actions here cannot be undone later. Pressing one opens a box to check the details. Actions that cannot be undone are sent only after you type the target ID.",
@@ -450,8 +451,8 @@ export const APP_TEXT = {
     en: "Dim meteor: a request not delivered yet (newest 2)",
   },
   "legend.glow": {
-    ja: "縁の光：答え待ち・失敗の子",
-    en: "Glowing edge: a child awaiting an answer or failed",
+    ja: "縁の光：答え待ち・失敗の子（新しい 6 つまで）",
+    en: "Glowing edge: a child awaiting an answer or failed (newest 6)",
   },
   "legend.meteorStill": {
     ja: "流星と光は、「動きを止める」と OS の「視差効果を減らす」では出ません",
@@ -816,8 +817,8 @@ export const APP_TEXT = {
   },
   "settings.still": { ja: "動きを止める", en: "Stop motion" },
   "settings.stillNote": {
-    ja: "新しい項目の入る動き・線を流れる流星と火花・光る縁などを止めます。OS の「視差効果を減らす」を入れているときは、ここを切っていても止まります。",
-    en: 'Stops motion such as new items sliding in, meteors and sparks moving along lines and glowing borders. If "Reduce motion" is on in the OS, motion stops even when this is off.',
+    ja: "新しい項目の入る動き・線を流れる流星と火花・光る縁・背面の絵などを止めます。OS の「視差効果を減らす」を入れているときは、ここを切っていても止まります。",
+    en: 'Stops motion such as new items sliding in, meteors and sparks moving along lines, glowing borders and the background picture. If "Reduce motion" is on in the OS, motion stops even when this is off.',
   },
   "settings.theme": { ja: "明暗", en: "Light or dark" },
   "settings.themeAuto": { ja: "OS に合わせる", en: "Match the OS" },
