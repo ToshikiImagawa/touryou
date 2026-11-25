@@ -8,7 +8,7 @@
       "source": {
         "source": "github",
         "repo": "comcreate/touryou",
-        "ref": "marketplace-v0.1.6"
+        "ref": "marketplace-v0.1.7-rc.0"
       }
     }
   }
