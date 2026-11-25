@@ -3,6 +3,7 @@ name: Release
 # タグ（v<plugin.json の version>）を push したら、plugin/ の zip を Release に付け、sha256 を出す。
 # marketplace は、このリポジトリの .claude-plugin/marketplace.json への PR（GITHUB_TOKEN。marketplace-self）だけ（docs/release.md）。
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
