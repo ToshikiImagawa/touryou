@@ -1,11 +1,17 @@
 {
   "name": "touryou",
   "description": "統合セッション 1 対 作業セッション n の木構造で Claude セッションを束ねるオーケストレーター。macOS（Apple Silicon）のみ対応。daemon などの本体は /setup で GitHub Release から取得する",
-  "version": "0.1.7",
+  "version": "0.1.7-rc.2",
   "author": {
     "name": "comcreate"
   },
   "license": "MIT",
   "repository": "https://github.com/comcreate/touryou",
-  "keywords": ["orchestrator", "multi-session", "composite", "mcp", "worktree"]
+  "keywords": [
+    "orchestrator",
+    "multi-session",
+    "composite",
+    "mcp",
+    "worktree"
+  ]
 }
